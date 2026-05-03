@@ -48,7 +48,7 @@ import type { Spa, Booking, Review, Therapist, User } from '@/types';
  * will be removed after all hooks have been migrated.
  */
 export { apiClient };
-export type { ApiResponse } from '@glamornate/contracts';
+export type { ApiResponse } from '@/lib/contracts';
 export type { ApiRequestOptions } from '@/lib/api-client';
 
 /**

@@ -23,8 +23,8 @@ import * as Sentry from '@sentry/nextjs';
 import { ApiError, ApiTimeoutError } from './api-errors';
 import { getAppCheckToken } from './app-check';
 import { logger } from './logger';
-import type { ApiResponse, HttpMethod } from '@glamornate/contracts';
-import { TOKEN_EXPIRED_CODE } from '@glamornate/contracts';
+import type { ApiResponse, HttpMethod } from '@/lib/contracts';
+import { TOKEN_EXPIRED_CODE } from '@/lib/contracts';
 
 const apiLogger = logger.child({ component: 'apiClient' });
 
@@ -332,5 +332,5 @@ export const apiClient: ApiClient = {
   baseUrl: BASE_URL,
 };
 
-export type { ApiResponse } from '@glamornate/contracts';
+export type { ApiResponse } from '@/lib/contracts';
 export { ApiError, ApiTimeoutError, isApiError } from './api-errors';

@@ -1,6 +1,6 @@
 import Image from 'next/image';
 import { MapPin } from 'lucide-react';
-import type { BookingCustomerLocation } from '@glamornate/contracts';
+import type { BookingCustomerLocation } from '@/lib/contracts';
 import type { SpaServiceWithId } from '@/hooks/useServices';
 import type { SpaWithId } from '@/hooks/useSpas';
 import type { TherapistWithId } from '@/hooks/useTherapists';

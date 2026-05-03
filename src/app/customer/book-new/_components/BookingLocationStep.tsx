@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Loader2, MapPin } from 'lucide-react';
-import type { BookingCustomerLocation } from '@glamornate/contracts';
+import type { BookingCustomerLocation } from '@/lib/contracts';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { LocationMapPin, type LocationMapPinChange } from '@/components/maps/LocationMapPin';

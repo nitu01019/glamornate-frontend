@@ -22,7 +22,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   CheckSignupAvailabilityRequest,
   CheckSignupAvailabilityResponse,
-} from '@glamornate/contracts';
+} from '@/lib/contracts';
 import { firebaseClientWrapper } from '@/lib/firebase-client-wrapper';
 import { getAppCheckToken } from '@/lib/app-check';
 import { useDebounceValue } from './useDebounceValue';
