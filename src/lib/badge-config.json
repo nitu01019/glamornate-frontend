@@ -1,0 +1,22 @@
+{
+  "thresholds": {
+    "mostBooked": {
+      "percentile": 0.2
+    },
+    "bestseller": {
+      "percentile": 0.1
+    },
+    "topRated": {
+      "minRating": 4.5,
+      "minReviews": 10
+    },
+    "new": {
+      "maxAgeDays": 30
+    }
+  },
+  "featuredServiceIds": [
+    "service-deep-tissue-massage",
+    "service-hydrating-facial",
+    "service-bridal-package"
+  ]
+}
