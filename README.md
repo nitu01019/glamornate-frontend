@@ -1,5 +1,9 @@
 # Glamornate — Frontend
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%E2%89%A520-brightgreen.svg)]()
+[![Status](https://img.shields.io/badge/status-public_mirror-orange.svg)]()
+
 Customer-facing web + Android app for the Glamornate spa booking platform. Single Next.js codebase compiled into both a Next.js App Router web build and a Capacitor-wrapped Android APK.
 
 > **⚠️ This is a public source mirror.** The repo is published for code review and reference. The build pipeline depends on internal workspace packages (`@glamornate/contracts`, `@glamornate/data-catalog`) that live outside this repo, so a fresh `git clone` will **not** be buildable end-to-end without those packages. See [Build limitations](#build-limitations) below.
@@ -105,4 +109,11 @@ This is a working snapshot of an active project. The codebase is in production-b
 
 ## License
 
-See `LICENSE` if present in the repo, otherwise contact the repo owner.
+This project is licensed under the [MIT License](LICENSE).
+
+© 2026 Glamornate / nitu01019. See [LICENSE](LICENSE) for full terms.
+
+## Contributing & Security
+
+- Issues and bug reports: see [CONTRIBUTING.md](CONTRIBUTING.md) and the GitHub issue tracker
+- Security disclosures: please follow [SECURITY.md](SECURITY.md) (do not open public issues for security)
