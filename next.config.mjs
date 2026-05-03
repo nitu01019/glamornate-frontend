@@ -13,6 +13,23 @@ const withBundleAnalyzer = bundleAnalyzer({
 
 const isProd = process.env.NODE_ENV === 'production';
 
+// In production builds, warn if Sentry env vars are missing.
+// Public mirror: defaults stripped — operators must supply these via
+// CI/Vercel environment variables. The build will succeed but
+// sourcemaps will not upload.
+if (process.env.NODE_ENV === 'production') {
+  const missing = [];
+  if (!process.env.SENTRY_ORG) missing.push('SENTRY_ORG');
+  if (!process.env.SENTRY_PROJECT) missing.push('SENTRY_PROJECT');
+  if (!process.env.SENTRY_AUTH_TOKEN) missing.push('SENTRY_AUTH_TOKEN');
+  if (missing.length > 0) {
+    console.warn(
+      `[next.config] Missing Sentry env vars: ${missing.join(', ')}. ` +
+      `Sourcemap upload will be skipped. See docs/runbooks/sentry-config.md.`,
+    );
+  }
+}
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
@@ -203,8 +220,8 @@ const nextConfig = {
 };
 
 const sentryOptions = {
-  org: process.env.SENTRY_ORG || 'glamornate',
-  project: process.env.SENTRY_PROJECT || 'glamornate-web',
+  org: process.env.SENTRY_ORG,
+  project: process.env.SENTRY_PROJECT,
   silent: !process.env.CI,
   widenClientFileUpload: true,
   hideSourceMaps: true,

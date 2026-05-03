@@ -1,11 +1,40 @@
 # Changelog
 
-All notable changes to the Glamornate frontend are documented in this file.
+All notable changes to this public mirror are documented here.
 
-Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
-dates use `YYYY-MM-DD` in local time.
+The project adheres to [Semantic Versioning](https://semver.org/) and the
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
-## [stagingRelease 2026-04-30]
+## [Unreleased]
+
+### Changed
+- Sentry org/project no longer default to internal values — operators must
+  supply `SENTRY_ORG` / `SENTRY_PROJECT` / `SENTRY_AUTH_TOKEN` env vars.
+  Build succeeds without them but sourcemap upload is skipped.
+
+### Added
+- `.env.example` documenting all required and optional env vars.
+- `CHANGELOG.md` (this file).
+
+## [v0.1.0] — 2026-05-03
+
+### Added
+- Initial public mirror release with full source tree (Next.js 15 +
+  React 18 + Capacitor 8 + Firebase 12).
+- MIT LICENSE, CONTRIBUTING, SECURITY, issue templates.
+- GitHub Actions CI + CodeQL workflows.
+- Branch protection on `main` (1 review required, no force-push).
+
+### Known limitations
+- Public repo references workspace deps `@glamornate/contracts` and
+  `@glamornate/data-catalog` via `file:../packages/*`; not buildable
+  from a clean clone until v0.2.0 vendoring lands.
+
+---
+
+## Historical entries (pre-mirror, retained for context)
+
+### [stagingRelease 2026-04-30]
 
 APK auth, booking, and location fix pass. All five user-visible failures
 on the staging APK trace to a single convergent root cause (App Check
