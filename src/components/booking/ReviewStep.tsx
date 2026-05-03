@@ -101,12 +101,14 @@ export default function ReviewStep({ onNext, onBack }: ReviewStepProps) {
     setSubmitting(true);
 
     try {
-      // Build serviceIds and services (with prices) from cart items
+      // Build serviceIds and services from cart items.
+      // Server-authoritative pricing: backend createBooking re-derives every
+      // line-item price from the spa's service catalog. Client price is
+      // display-only and intentionally NOT included in the callable payload.
       const serviceIds = items.map((item) => item.serviceId);
       const services = items.map((item) => ({
         serviceId: item.serviceId,
         serviceName: item.serviceName,
-        price: item.price,
         quantity: item.quantity,
       }));
 

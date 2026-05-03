@@ -5,23 +5,56 @@ import { getAdminDb } from '@/lib/firebase-admin';
 import type { BookingRequest, CartItem } from '@/types';
 
 /**
- * Calculate total price server-side by looking up service prices from Firestore.
- * Falls back to summing cart item prices if Firestore is unavailable.
+ * Fetch every service document referenced by the cart in a SINGLE batched
+ * Firestore read (replaces N+1 sequential `.get()` calls). Returns a Map
+ * keyed by serviceId. Missing services are simply absent from the map; the
+ * callers decide whether absence is fatal (price → throw) or silent (duration → 0).
+ *
+ * Implementation note: Firestore Admin's `db.getAll(...refs)` accepts
+ * arbitrary numbers of refs in one round-trip. IDs are deduped before the
+ * call so cart items with the same serviceId share a single read.
  */
-async function calculateTotalAmount(services: CartItem[]): Promise<number> {
+async function fetchServiceDocs(
+  services: CartItem[],
+): Promise<Map<string, FirebaseFirestore.DocumentData>> {
   const adminDb = getAdminDb();
-
   if (!adminDb) {
     throw new Error('Service unavailable');
   }
 
+  // Dedupe to minimise reads when the same service appears multiple times.
+  const uniqueIds = Array.from(new Set(services.map((item) => item.serviceId)));
+
+  const result = new Map<string, FirebaseFirestore.DocumentData>();
+  if (uniqueIds.length === 0) return result;
+
+  const refs = uniqueIds.map((id) => adminDb.collection('services').doc(id));
+  const snapshots = await adminDb.getAll(...refs);
+
+  for (const snap of snapshots) {
+    if (snap.exists) {
+      const data = snap.data();
+      if (data) result.set(snap.id, data);
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Calculate total price server-side by looking up service prices from Firestore.
+ * Throws if any cart-item service is missing.
+ */
+async function calculateTotalAmount(
+  services: CartItem[],
+  serviceDocs: Map<string, FirebaseFirestore.DocumentData>,
+): Promise<number> {
   let total = 0;
 
   for (const item of services) {
-    const serviceDoc = await adminDb.collection('services').doc(item.serviceId).get();
+    const serviceData = serviceDocs.get(item.serviceId);
 
-    if (serviceDoc.exists) {
-      const serviceData = serviceDoc.data()!;
+    if (serviceData) {
       const price = serviceData.basePrice ?? 0;
       total += price * item.quantity;
     } else {
@@ -35,22 +68,18 @@ async function calculateTotalAmount(services: CartItem[]): Promise<number> {
 
 /**
  * Calculate total duration server-side by looking up service durations from Firestore.
- * Falls back to summing cart item durations if Firestore is unavailable.
+ * Missing services contribute 0 (matches legacy behavior — duration is best-effort).
  */
-async function calculateTotalDuration(services: CartItem[]): Promise<number> {
-  const adminDb = getAdminDb();
-
-  if (!adminDb) {
-    throw new Error('Service unavailable');
-  }
-
+async function calculateTotalDuration(
+  services: CartItem[],
+  serviceDocs: Map<string, FirebaseFirestore.DocumentData>,
+): Promise<number> {
   let total = 0;
 
   for (const item of services) {
-    const serviceDoc = await adminDb.collection('services').doc(item.serviceId).get();
+    const serviceData = serviceDocs.get(item.serviceId);
 
-    if (serviceDoc.exists) {
-      const serviceData = serviceDoc.data()!;
+    if (serviceData) {
       const duration = serviceData.baseDuration ?? 0;
       total += duration * item.quantity;
     }
@@ -123,9 +152,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: 'Service unavailable' }, { status: 503 });
     }
 
-    // ---- Calculate price and duration server-side ----
-    const totalAmount = await calculateTotalAmount(body.services!);
-    const totalDuration = await calculateTotalDuration(body.services!);
+    // ---- Calculate price and duration server-side (single batched read) ----
+    const serviceDocs = await fetchServiceDocs(body.services!);
+    const totalAmount = await calculateTotalAmount(body.services!, serviceDocs);
+    const totalDuration = await calculateTotalDuration(body.services!, serviceDocs);
 
     // ---- Create the booking (use authenticated uid, not client-supplied userId) ----
     const bookingRequest: BookingRequest = {
