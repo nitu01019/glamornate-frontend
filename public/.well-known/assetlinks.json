@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.glamornate.app",
+      "sha256_cert_fingerprints": [
+        "83:34:E7:DB:BB:5B:F9:8D:19:BB:21:FF:D1:3E:9F:F4:89:A5:8F:43:FE:E7:4A:B4:20:97:AD:25:FC:66:E5:E3"
+      ]
+    }
+  }
+]
