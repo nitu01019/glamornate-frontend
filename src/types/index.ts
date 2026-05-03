@@ -41,7 +41,7 @@ import type {
   Verification,
   Statistics,
   SEO,
-} from '@glamornate/contracts';
+} from '@/lib/contracts';
 export type {
   SpaCategory,
   DiscountType,

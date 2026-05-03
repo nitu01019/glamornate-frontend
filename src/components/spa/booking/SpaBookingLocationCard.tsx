@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { MapPin, Navigation, Phone, AlertCircle } from 'lucide-react';
 import { openDirections } from '@/lib/maps-deeplink';
-import type { BookingCustomerLocation } from '@glamornate/contracts';
+import type { BookingCustomerLocation } from '@/lib/contracts';
 import MapsKeyMissingFallback from '@/components/maps/MapsKeyMissingFallback';
 
 export interface SpaBookingLocationCardProps {

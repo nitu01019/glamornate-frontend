@@ -4,4 +4,4 @@
  * frontend import sites (`@/data/glamornate-catalog`) during the transition.
  */
 
-export * from '@glamornate/data-catalog';
+export * from '@/data/catalog';

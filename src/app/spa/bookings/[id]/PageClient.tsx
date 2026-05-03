@@ -5,7 +5,7 @@ import { AlertCircle } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { ProtectedRoute } from '@/components/ProtectedRoute';
-import type { BookingCustomerLocation } from '@glamornate/contracts';
+import type { BookingCustomerLocation } from '@/lib/contracts';
 import { useBookingRealtime } from '@/hooks/useBookings';
 import { useSpa } from '@/hooks/useSpas';
 import { SpaBookingDetailHeader } from '@/components/spa/booking/SpaBookingDetailHeader';

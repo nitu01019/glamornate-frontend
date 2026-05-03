@@ -2,7 +2,7 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { apiClient } from '@/lib/api-client';
-import type { ApiResponse } from '@glamornate/contracts';
+import type { ApiResponse } from '@/lib/contracts';
 import type { ServiceCategory, HomeService, Promotion } from '@/lib/mock-data';
 import { catalogCategories, catalogServices } from '@/data/glamornate-catalog';
 import { promotions as catalogPromotions } from '@/lib/mock-data';

@@ -20,7 +20,7 @@
  * (e.g. step 5 with no spa).
  */
 import { useReducer, useCallback } from 'react';
-import type { BookingCustomerLocation } from '@glamornate/contracts';
+import type { BookingCustomerLocation } from '@/lib/contracts';
 import type { SpaWithId } from '@/hooks/useSpas';
 import type { TherapistWithId } from '@/hooks/useTherapists';
 
