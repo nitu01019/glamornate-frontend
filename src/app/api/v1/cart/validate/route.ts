@@ -1,147 +1,27 @@
-import { NextRequest, NextResponse } from 'next/server'
-import { services } from '@/lib/mock-data'
-
-interface CartItem {
-  serviceId: string
-  quantity: number
-}
-
-interface ValidatedCartItem {
-  serviceId: string
-  name: string
-  quantity: number
-  unitPrice: number
-  originalPrice: number | null
-  discountPercent: number | null
-  duration: string
-  durationMinutes: number
-  lineTotal: number
-  available: boolean
-}
-
 /**
- * POST /api/v1/cart/validate
- * Validate cart items and return current prices.
+ * /api/v1/cart/validate (DEPRECATED — alias for /api/v1/cart/preview)
+ *
+ * Original semantics matched preview exactly per the canonical comment in
+ * preview/route.ts. This file is kept for URL stability while clients
+ * (Capacitor WebView, web) migrate to /preview.
+ *
+ * Sunset: 2026-11-03 per RFC 8594.
+ *
+ * After Sunset, this route may be removed in a major release.
  */
-export async function POST(request: NextRequest) {
-  try {
-    const body: unknown = await request.json()
+export { POST } from '../preview/route';
 
-    // Validate request body shape
-    if (
-      !body ||
-      typeof body !== 'object' ||
-      !('items' in body) ||
-      !Array.isArray((body as { items: unknown }).items)
-    ) {
-      return NextResponse.json(
-        {
-          success: false,
-          data: null,
-          error: 'Request body must contain an "items" array',
-        },
-        { status: 400 }
-      )
-    }
+import type { NextRequest } from 'next/server';
 
-    const items = (body as { items: CartItem[] }).items
-
-    if (items.length === 0) {
-      return NextResponse.json(
-        { success: false, data: null, error: 'Cart is empty' },
-        { status: 400 }
-      )
-    }
-
-    if (items.length > 50) {
-      return NextResponse.json(
-        { success: false, data: null, error: 'Cart cannot exceed 50 items' },
-        { status: 400 }
-      )
-    }
-
-    const validated: ValidatedCartItem[] = []
-    const warnings: string[] = []
-
-    for (const item of items) {
-      if (!item.serviceId || typeof item.serviceId !== 'string') {
-        warnings.push(`Invalid serviceId in cart item`)
-        continue
-      }
-
-      const quantity = Math.max(1, Math.min(item.quantity || 1, 10))
-      const service = services.find((s) => s.id === item.serviceId)
-
-      if (!service) {
-        warnings.push(`Service not found: ${item.serviceId}`)
-        validated.push({
-          serviceId: item.serviceId,
-          name: 'Unknown Service',
-          quantity,
-          unitPrice: 0,
-          originalPrice: null,
-          discountPercent: null,
-          duration: '0min',
-          durationMinutes: 0,
-          lineTotal: 0,
-          available: false,
-        })
-        continue
-      }
-
-      if (!service.isActive) {
-        warnings.push(`Service unavailable: ${service.name}`)
-      }
-
-      validated.push({
-        serviceId: service.id,
-        name: service.name,
-        quantity,
-        unitPrice: service.basePrice,
-        originalPrice: service.originalPrice ?? null,
-        discountPercent: service.discountPercent ?? null,
-        duration: service.duration,
-        durationMinutes: service.durationMinutes,
-        lineTotal: service.basePrice * quantity,
-        available: service.isActive,
-      })
-    }
-
-    const subtotal = validated.reduce((sum, v) => sum + v.lineTotal, 0)
-    const totalDuration = validated.reduce((sum, v) => sum + v.durationMinutes * v.quantity, 0)
-    const totalSavings = validated.reduce((sum, v) => {
-      if (v.originalPrice && v.available) {
-        return sum + (v.originalPrice - v.unitPrice) * v.quantity
-      }
-      return sum
-    }, 0)
-
-    return NextResponse.json({
-      success: true,
-      data: {
-        items: validated,
-        summary: {
-          itemCount: validated.filter((v) => v.available).length,
-          subtotal,
-          totalSavings,
-          totalDurationMinutes: totalDuration,
-          currency: 'INR',
-        },
-        warnings: warnings.length > 0 ? warnings : undefined,
-      },
-      error: null,
-    })
-  } catch (error: unknown) {
-    if (error instanceof SyntaxError) {
-      return NextResponse.json(
-        { success: false, data: null, error: 'Invalid JSON in request body' },
-        { status: 400 }
-      )
-    }
-    const message = error instanceof Error ? error.message : 'Failed to validate cart'
-    return NextResponse.json(
-      { success: false, data: null, error: message },
-      { status: 500 }
-    )
-  }
-}
+// We can't add response headers to a re-exported handler directly without
+// wrapping. If sunset signaling matters at runtime, swap to the wrapper
+// below — keep export shape stable for callers.
+//
+// export async function POST(req: NextRequest) {
+//   const { POST: previewPost } = await import('../preview/route');
+//   const res = await previewPost(req);
+//   res.headers.set('Sunset', 'Sun, 03 Nov 2026 00:00:00 GMT');
+//   res.headers.set('Deprecation', 'true');
+//   res.headers.set('Link', '</api/v1/cart/preview>; rel="successor-version"');
+//   return res;
+// }
