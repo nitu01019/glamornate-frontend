@@ -1,0 +1,91 @@
+# dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# next.js
+.next/
+.next.nosync/
+out/
+
+# production
+build/
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# local env
+.env*.local
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# testing
+coverage/
+test-results/
+playwright-report/
+tests/.auth/
+tests/e2e/.auth/
+tests/report/
+tests/test-results/
+
+# Capacitor — Android
+android/app/build/
+android/.gradle/
+android/build/
+android/app/src/main/assets/public/
+
+# Capacitor — iOS
+ios/App/App/public/
+ios/Pods/
+
+# Release signing (NEVER commit the real keystore or filled-in properties).
+# The *.example template IS committed so new contributors know the format.
+*.keystore
+*.jks
+keystore.properties
+!keystore.properties.example
+android/app/keystore.properties
+!android/app/keystore.properties.example
+
+# Mobile env
+.env.mobile
+.env.mobile.local
+
+# belt-and-suspenders: explicit non-local env files
+.env
+.env.production
+.env.development
+.env.test
+.env.mobile
+firebase-debug*.log
+firestore-debug*.log
+
+# dev/AI tooling — should not ship to public repo
+.audit-findings/
+.claude/
+.idea/
+.vscode/
+.cursor/
+.gstack/
+.code-review-graph/
+.build-history.log
+
+# Apple/Windows signing certificates
+*.p12
+*.pfx
+
+# Firebase Admin / service-account credentials (never commit)
+service-account*.json
+*-service-account.json
+*adminsdk*.json
