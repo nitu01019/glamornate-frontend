@@ -73,7 +73,7 @@ export const mockBookings: Booking[] = [
     ],
     customer: {
       name: 'Priya Sharma',
-      phone: '+91 98765 43210',
+      phone: '+91 90000 00000',
       notes: 'Prefer lavender essential oil',
       preferences: 'Soft pressure',
     },
@@ -160,7 +160,7 @@ export const mockBookings: Booking[] = [
     ],
     customer: {
       name: 'Priya Sharma',
-      phone: '+91 98765 43210',
+      phone: '+91 90000 00000',
     },
     reminderSent: {
       at_24hr: true,
@@ -261,7 +261,7 @@ export const mockBookings: Booking[] = [
     ],
     customer: {
       name: 'Amit Kumar',
-      phone: '+91 87654 32109',
+      phone: '+91 90000 00001',
     },
     checkIn: '2026-03-23T16:00:00Z',
     checkOut: '2026-03-23T17:30:00Z',
@@ -333,7 +333,7 @@ export const mockBookings: Booking[] = [
     ],
     customer: {
       name: 'Priya Sharma',
-      phone: '+91 98765 43210',
+      phone: '+91 90000 00000',
     },
     isActive: true,
     createdBy: 'customer' as BookingSource,

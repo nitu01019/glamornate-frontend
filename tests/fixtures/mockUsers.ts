@@ -13,7 +13,7 @@ export const mockUsers: User[] = [
     profile: {
       displayName: 'Priya Sharma',
       email: 'priya.sharma@example.com',
-      phone: '+91 98765 43210',
+      phone: '+91 90000 00000',
       photo: 'https://example.com/photos/priya.jpg',
       gender: 'female',
       dob: '1990-05-15',
@@ -43,7 +43,7 @@ export const mockUsers: User[] = [
     profile: {
       displayName: 'Rahul Verma',
       email: 'rahul.verma@serenityspa.com',
-      phone: '+91 98765 12345',
+      phone: '+91 90000 00003',
       photo: 'https://example.com/photos/rahul.jpg',
       gender: 'male',
     },
@@ -73,7 +73,7 @@ export const mockUsers: User[] = [
     profile: {
       displayName: 'Anjali Patel',
       email: 'anjali@serenityspa.com',
-      phone: '+91 98765 67890',
+      phone: '+91 90000 00005',
       photo: 'https://example.com/photos/anjali.jpg',
       gender: 'female',
     },
@@ -101,8 +101,8 @@ export const mockUsers: User[] = [
     role: 'admin' as UserRole,
     profile: {
       displayName: 'Admin User',
-      email: 'admin@glamornate.com',
-      phone: '+91 99999 99999',
+      email: 'admin@glamornate.test',
+      phone: '+91 90000 00002',
     },
     emailVerified: true,
     phoneVerified: true,
@@ -124,7 +124,7 @@ export const mockUsers: User[] = [
     role: 'customer' as UserRole,
     profile: {
       displayName: 'Amit Kumar',
-      phone: '+91 87654 32109',
+      phone: '+91 90000 00001',
       gender: 'male',
     },
     emailVerified: false,

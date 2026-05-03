@@ -61,7 +61,7 @@ export const mockAdmin = {
   profile: {
     ...mockUser.profile,
     displayName: 'Admin User',
-    email: 'admin@glamornate.com',
+    email: 'admin@glamornate.test',
   },
 }
 
