@@ -429,7 +429,7 @@ class FirebaseClientWrapper {
     // network blip". Without this, every TypeError-shaped failure
     // collapsed into the lossy "Network request failed" toast (the bug
     // we hit on the debug-signed APK that lacked a registered debug
-    // token). See /Users/nitishbhardwaj/.claude/plans/apk-network-request-failed-systematic-debug.md.
+    // token). See <internal-debug-notes>.
     let appCheckToken: string | null = null;
     try {
       appCheckToken = await getAppCheckToken();

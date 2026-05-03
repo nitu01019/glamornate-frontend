@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/AppTheme">
+        <!--
+          android:exported="true" is REQUIRED for the launcher activity (MAIN/LAUNCHER
+          + App Links intent filter). Not a vulnerability — documented per SEC-L7.
+        -->
+        <activity
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation|density"
+            android:name=".MainActivity"
+            android:label="@string/title_activity_main"
+            android:theme="@style/AppTheme.NoActionBarLaunch"
+            android:launchMode="singleTask"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- Phase 3 / M1: Android App Links. Verified via
+                 https://glamornate.com/.well-known/assetlinks.json.
+                 The autoVerify attribute instructs Android 12+ to fetch
+                 the Digital Asset Links file on first install and link
+                 this activity as the default handler for
+                 https://glamornate.com/* URLs. See
+                 frontend/src/lib/deep-links.ts for the in-app router. -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="glamornate.com" />
+            </intent-filter>
+        </activity>
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths" />
+        </provider>
+
+        <!-- Phase 2 / Agent 2F — C9: Firebase Cloud Messaging defaults.
+             - default_notification_channel_id: must match DEFAULT_CHANNEL_ID in
+               src/lib/messaging/fcm.ts and the channel id that Cloud Functions
+               target when sending pushes.
+             - default_notification_color: tinting for the small icon shown in
+               the system tray. Uses the spa-red brand color from colors.xml. -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="glamornate_default" />
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_color"
+            android:resource="@color/colorPrimary" />
+
+        <!-- App Check provider selector — populated by manifestPlaceholders in
+             android/app/build.gradle (release="playintegrity",
+             debug/stagingRelease="debug"). Read at runtime by MainActivity. -->
+        <meta-data
+            android:name="com.glamornate.app.APP_CHECK_PROVIDER"
+            android:value="${appCheckProvider}" />
+    </application>
+
+    <!-- Permissions -->
+
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Phase 4 / 4B: Location permissions for Capacitor Geolocation plugin.
+         COARSE: sufficient for city-level address lookup.
+         FINE:   required for accurate reverse-geocoding of the user's current
+                 location. Runtime permission prompt is triggered by
+                 `@capacitor/geolocation` via `Geolocation.requestPermissions`.
+         Matches the prominent disclosure text documented in
+         docs/runbooks/google-maps-key-setup.md (Play Store policy §5.3). -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+
+    <!-- Phase 2 / Agent 2F — C9: Firebase Cloud Messaging permissions.
+         POST_NOTIFICATIONS: required on Android 13+ (API 33) for the app to
+         display notifications. Runtime prompt is triggered by
+         `FirebaseMessaging.requestPermissions()` in src/lib/messaging/fcm.ts.
+         WAKE_LOCK: required so FCM high-priority pushes can wake the device
+         and deliver in a timely manner. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+</manifest>

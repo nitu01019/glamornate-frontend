@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MOB-M3: Scoped FileProvider paths.
+
+  Previous config exposed the whole external + cache dirs via path=".",
+  which let any FileProvider consumer hand out URIs for arbitrary files.
+  Scope the shareable tree to a dedicated "shared/" subfolder under the
+  app's cache and external-files directories so only files the app
+  deliberately writes there are reachable.
+-->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <cache-path name="shared_cache" path="shared/" />
+    <external-files-path name="shared_external" path="shared/" />
+</paths>

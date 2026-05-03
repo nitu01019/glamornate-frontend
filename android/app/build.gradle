@@ -1,0 +1,237 @@
+apply plugin: 'com.android.application'
+
+// -----------------------------------------------------------------------------
+// Phase 4 / Agent 4D — Release signing configuration.
+//
+// Strategy:
+//   1. Read signing credentials from `android/app/keystore.properties` when
+//      present. This file is git-ignored (see root .gitignore "Release
+//      signing" block) and is produced locally from `keystore.properties.example`.
+//   2. If the file is missing, fall back to DEBUG signing so `assembleRelease`
+//      still succeeds for local smoke testing. The build log prints a loud
+//      warning so CI / release engineers cannot miss it.
+//
+// The keystore file itself is never committed. See:
+//   - docs/runbooks/android-keystore-setup.md (one-time creation + backup)
+//   - docs/runbooks/android-release-build.md  (signed build + verification)
+// -----------------------------------------------------------------------------
+def keystorePropertiesFile = rootProject.file('app/keystore.properties')
+def keystoreProperties = new Properties()
+def hasReleaseKeystore = false
+
+if (keystorePropertiesFile.exists()) {
+    keystorePropertiesFile.withInputStream { stream ->
+        keystoreProperties.load(stream)
+    }
+    def requiredKeys = ['storeFile', 'storePassword', 'keyAlias', 'keyPassword']
+    def missing = requiredKeys.findAll { !keystoreProperties.containsKey(it) || keystoreProperties[it].toString().trim().isEmpty() }
+    if (missing.isEmpty()) {
+        hasReleaseKeystore = true
+    } else {
+        logger.warn("[glamornate] keystore.properties is missing keys: ${missing}. Falling back to debug signing.")
+    }
+} else {
+    logger.warn("[glamornate] android/app/keystore.properties not found. Release build will be signed with the DEBUG key (NOT for Play Store upload). See docs/runbooks/android-keystore-setup.md.")
+}
+
+android {
+    namespace = "com.glamornate.app"
+    compileSdk = rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "com.glamornate.app"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 2
+        versionName "0.1.0"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+
+    signingConfigs {
+        release {
+            if (hasReleaseKeystore) {
+                def resolvedStoreFile = file(keystoreProperties['storeFile'])
+                if (!resolvedStoreFile.isAbsolute()) {
+                    // Interpret relative paths against android/app/ so storeFile=glamornate-upload.keystore
+                    // works when the .keystore sits next to this build.gradle.
+                    resolvedStoreFile = rootProject.file("app/${keystoreProperties['storeFile']}")
+                }
+                storeFile resolvedStoreFile
+                storePassword keystoreProperties['storePassword']
+                keyAlias keystoreProperties['keyAlias']
+                keyPassword keystoreProperties['keyPassword']
+            }
+            // When keystore.properties is absent, this signingConfig stays
+            // declared-but-unconfigured and is never assigned to a buildType;
+            // the release buildType below falls back to signingConfigs.debug.
+        }
+    }
+
+    buildTypes {
+        release {
+            // Production: Play Integrity App Check provider. Read at runtime by
+            // MainActivity via the AndroidManifest <meta-data> placeholder
+            // ${appCheckProvider}. See MainActivity.readAppCheckProviderName().
+            manifestPlaceholders = [appCheckProvider: "playintegrity"]
+
+            // Phase 4 / 4D: enable shrinking + minification for the release
+            // build. The Capacitor bridge + AndroidX entry points must be kept
+            // by rules in proguard-rules.pro; do not raise this flag without
+            // smoke-testing that webview bridge calls still work.
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+
+            if (hasReleaseKeystore) {
+                signingConfig signingConfigs.release
+            } else {
+                // DEBUG signing fallback — DO NOT upload to Play Store.
+                signingConfig signingConfigs.debug
+            }
+        }
+
+        debug {
+            // Developer-convenience builds use the Debug App Check provider so
+            // sideloaded debug APKs mint tokens via the one-time UUID logged to
+            // logcat (registered in Firebase Console → App Check → Apps →
+            // Manage debug tokens). All other debug defaults are inherited.
+            manifestPlaceholders = [appCheckProvider: "debug"]
+        }
+
+        stagingRelease {
+            // Sideload-installable artifact that mirrors production's R8 +
+            // resource-shrinking profile but uses the Debug App Check provider
+            // and is signed with the debug keystore. Use case: smoke-testing
+            // R8-minified output on developer devices without going through
+            // Play Store. Production `release` buildType is unaffected.
+            manifestPlaceholders = [appCheckProvider: "debug"]
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            // Always sign with the debug keystore — staging is for internal
+            // sideload only and must be installable on any developer device
+            // without the release keystore being present.
+            signingConfig signingConfigs.debug
+            // Capacitor sub-projects (capacitor-status-bar, sentry-capacitor,
+            // capacitor-push-notifications, etc.) only publish `debug` and
+            // `release` variants. Without matchingFallbacks, AGP cannot resolve
+            // a runtime variant for our `stagingRelease` buildType and the
+            // build fails with "No matching variant of project :capacitor-*
+            // was found." Prefer `release` to mirror production's R8-minified
+            // profile, falling back to `debug` if a sub-project somehow lacks
+            // a release variant.
+            matchingFallbacks = ['release', 'debug']
+            // -----------------------------------------------------------------
+            // Pinned App Check Debug UUID — unifies web and Android.
+            //
+            // Reads NEXT_PUBLIC_APP_CHECK_DEBUG_TOKEN from frontend/.env.local
+            // and exposes it to MainActivity as BuildConfig.APP_CHECK_DEBUG_TOKEN.
+            // MainActivity then passes it to
+            //   DebugAppCheckProviderFactory.getInstance(token)
+            // so the APK and the localhost web app mint App Check tokens with
+            // the SAME UUID. Operator only needs to register one token in
+            // Firebase Console → App Check → Manage debug tokens.
+            //
+            // If .env.local is missing or the key is empty, the field is the
+            // empty string and MainActivity falls back to the auto-generated
+            // per-device UUID (the previous behavior).
+            // -----------------------------------------------------------------
+            def envLocalFile = new File(rootProject.projectDir, '../.env.local')
+            def pinnedAppCheckToken = ''
+            if (envLocalFile.exists()) {
+                envLocalFile.eachLine { line ->
+                    def trimmed = line.trim()
+                    if (trimmed.startsWith('NEXT_PUBLIC_APP_CHECK_DEBUG_TOKEN=')) {
+                        pinnedAppCheckToken =
+                            trimmed.substring('NEXT_PUBLIC_APP_CHECK_DEBUG_TOKEN='.length())
+                                .replaceAll('^"|"$', '')
+                                .trim()
+                    }
+                }
+            }
+            if (pinnedAppCheckToken.isEmpty()) {
+                logger.warn("[glamornate] NEXT_PUBLIC_APP_CHECK_DEBUG_TOKEN not found in frontend/.env.local — APK will mint a per-device UUID and require its own Firebase Console registration.")
+            } else {
+                logger.lifecycle("[glamornate] APK will use pinned App Check Debug UUID from .env.local (unified with web).")
+            }
+            buildConfigField "String", "APP_CHECK_DEBUG_TOKEN", "\"${pinnedAppCheckToken}\""
+        }
+    }
+
+    // Phase 4 / 4D: Android App Bundle (.aab) is the required upload format
+    // for Play Store. `bundleRelease` produces it; no explicit `bundle { ... }`
+    // block is needed because AGP enables language/density/abi splits by
+    // default. This comment is a named anchor for future overrides.
+
+    // AGP 8 disables BuildConfig generation by default. We need it so
+    // MainActivity.onCreate can branch on BuildConfig.DEBUG to install the
+    // App Check Debug provider on debug builds and Play Integrity on
+    // release builds. See android/app/src/main/java/com/glamornate/app/MainActivity.java.
+    buildFeatures {
+        buildConfig true
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation project(':capacitor-android')
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+
+    // Firebase BoM pins all firebase-* artifacts to a single, tested set of
+    // versions. App Check (Play Integrity) is required so callable functions
+    // protected by `enforceAppCheck: true` accept requests from the device.
+    // MainActivity.onCreate installs the provider factory at app launch.
+    //
+    // Why two providers:
+    //   - Release / Play Store builds: Play Integrity attests via Google
+    //     Play services. Required for production.
+    //   - Debug / sideloaded APKs: Play Integrity FAILS on sideloaded debug
+    //     builds because the package isn't published through Play. Without
+    //     a debug provider, every callable Function (enforceAppCheck=true)
+    //     rejects with the user-visible symptom "network request failed".
+    //     The Debug provider issues a one-time token printed to logcat
+    //     which the developer registers in Firebase Console under
+    //     App Check → Apps → Manage debug tokens.
+    implementation platform('com.google.firebase:firebase-bom:33.5.1')
+    implementation 'com.google.firebase:firebase-appcheck-playintegrity'
+    implementation 'com.google.firebase:firebase-appcheck'
+    implementation 'com.google.firebase:firebase-appcheck-debug'
+}
+
+apply from: 'capacitor.build.gradle'
+
+// -----------------------------------------------------------------------------
+// Firebase Crashlytics + google-services integration.
+//
+// The google-services plugin is applied only when google-services.json is
+// present (dropped in by the developer from the Firebase console). The
+// Crashlytics gradle plugin is applied in the same conditional block so
+// release builds without a Firebase config still succeed.
+//
+// See docs/runbooks/crashlytics-setup.md for the one-time wiring steps.
+// -----------------------------------------------------------------------------
+try {
+    def servicesJSON = file('google-services.json')
+    if (servicesJSON.text) {
+        apply plugin: 'com.google.gms.google-services'
+        apply plugin: 'com.google.firebase.crashlytics'
+    }
+} catch(Exception e) {
+    logger.info("google-services.json not found, google-services + Crashlytics plugins not applied. Push notifications + crash reporting will be disabled in this build.")
+}

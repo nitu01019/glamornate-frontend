@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Network security config for Glamornate.
+  - Production: cleartext traffic disabled, system CAs only.
+  - Debug: system + user CAs allowed for dev proxies (Charles, mitmproxy).
+  Cert pinning to prod API host is an optional follow-up — see
+  docs/remediation/PHASE-1-BLOCKERS.md.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system"/>
+        </trust-anchors>
+    </base-config>
+    <debug-overrides>
+        <trust-anchors>
+            <certificates src="system"/>
+            <certificates src="user"/>
+        </trust-anchors>
+    </debug-overrides>
+</network-security-config>

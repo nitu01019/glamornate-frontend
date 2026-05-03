@@ -9,7 +9,7 @@
  *   - C (local-only): no contract exists yet; keep local and log as candidate
  *       for contracts-package expansion.
  *
- * Reconciliation ledger: /Users/nitishbhardwaj/Desktop/Glamornate/docs/remediation/A2-RECONCILIATION.md
+ * Reconciliation ledger: <internal-debug-notes>
  */
 
 // --- Category A (adopted from @glamornate/contracts) ---
