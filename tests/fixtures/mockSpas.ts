@@ -31,7 +31,7 @@ export const mockSpas: Spa[] = [
       phone: '+91 22 1234 5678',
       email: 'info@serenityspa.com',
       website: 'https://serenityspa.com',
-      whatsapp: '+91 98765 12345',
+      whatsapp: '+91 90000 00003',
     },
     categories: ['massage', 'facial', 'body', 'pedicure', 'manicure', 'wellness'] as ServiceCategory[],
     amenities: [
@@ -119,7 +119,7 @@ export const mockSpas: Spa[] = [
     contact: {
       phone: '+91 11 2345 6789',
       email: 'hello@blisswellness.com',
-      whatsapp: '+91 98765 54321',
+      whatsapp: '+91 90000 00004',
     },
     categories: ['massage', 'facial', 'wellness'] as ServiceCategory[],
     amenities: [
