@@ -2,7 +2,7 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { apiClient } from '@/lib/api-client';
-import type { ApiResponse } from '@/lib/contracts';
+import type { ApiResponse } from '@/shared/contracts';
 import type { ServiceCategory, HomeService, Promotion } from '@/lib/mock-data';
 import { catalogCategories, catalogServices } from '@/data/glamornate-catalog';
 import { promotions as catalogPromotions } from '@/lib/mock-data';
@@ -65,10 +65,10 @@ export function useMostBooked(category?: string, city?: string) {
     queryKey: ['most-booked', category ?? 'all', city ?? 'all'],
     queryFn: async (): Promise<MostBookedResult> => {
       try {
-        const envelope = await apiClient.get<ApiResponse<HomeService[]>>(
-          '/services/most-booked',
-          { params: { category, city }, raw: true },
-        );
+        const envelope = await apiClient.get<ApiResponse<HomeService[]>>('/services/most-booked', {
+          params: { category, city },
+          raw: true,
+        });
         return {
           services: envelope.data ?? [],
           fallbackLevel: envelope.fallbackLevel ?? 'platform',
@@ -89,9 +89,7 @@ export function useMostBooked(category?: string, city?: string) {
     retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 8000),
     placeholderData: {
       services: sortByBookings(
-        category
-          ? FALLBACK_SERVICES.filter((s) => s.categorySlug === category)
-          : FALLBACK_SERVICES,
+        category ? FALLBACK_SERVICES.filter((s) => s.categorySlug === category) : FALLBACK_SERVICES,
         10,
       ),
       fallbackLevel: 'platform' as FallbackLevel,

@@ -36,7 +36,13 @@ const checkPasswordStrength = (password: string): PasswordStrength => {
   return { requirements, score };
 };
 
-function getRoleDashboard(role: UserRole | undefined): string {
+function getRoleDashboard(role: UserRole | undefined, hasSpaData: boolean = true): string {
+  // spa_owner with null spaData hits /spa/dashboard and crashes on
+  // undefined spaId — fall back to /customer/dashboard until the spa doc
+  // exists. Sentry breadcrumb is emitted by lookupSpaData on miss.
+  if (role === 'spa_owner' && !hasSpaData) {
+    return '/customer/dashboard';
+  }
   const dashboards: Record<UserRole, string> = {
     customer: '/customer/dashboard',
     spa_owner: '/spa/dashboard',
@@ -52,6 +58,12 @@ function getRoleDashboard(role: UserRole | undefined): string {
  * `idle` collapses to nothing so the field reverts to its untouched
  * appearance. The other states surface as a small icon + label tuned
  * to match the form's existing colour palette.
+ *
+ * The `field` prop carries a `'phone'` variant whose `taken` copy reads
+ * "Phone already registered…". The signup form does not collect phone
+ * today; the variant is kept ready so the future phone-field iteration
+ * (see specs/2026-05-08-booking-customer-overhaul.md) can reuse this pill
+ * without a refactor.
  */
 function AvailabilityPill({
   status,
@@ -90,7 +102,6 @@ function AvailabilityPill({
       </p>
     );
   }
-  // status === 'error' is never set by the hook (silent-fail pattern); treat as idle.
   return null;
 }
 
@@ -116,19 +127,25 @@ function RegisterForm() {
   // The signup form currently only collects email (no phone field),
   // so we only wire the email lookup here. If a phone field is added
   // later, mirror this with `useSignupAvailability('phone', phone)`.
-  const { status: emailAvailability, triggerCheck: triggerEmailCheck } = useSignupAvailability('email', email, { trigger: 'both' });
+  const { status: emailAvailability, triggerCheck: triggerEmailCheck } = useSignupAvailability(
+    'email',
+    email,
+    { trigger: 'both' },
+  );
 
   const { suggestion: emailTypoSuggestion } = useEmailTypoSuggestion(email);
 
   useEffect(() => {
     if (isAuthenticated && user && !authLoading && success) {
-      const redirectUrl = getRoleDashboard(user.role);
+      const redirectUrl = getRoleDashboard(user.role, !!user.spaData?.spaId);
       router.replace(redirectUrl);
     }
   }, [isAuthenticated, user, authLoading, success, router]);
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
+    // 2026-05-11 (P-D1 / T3-F50): top-of-handler guard against double-submit.
+    if (isSubmitting || isGoogleLoading) return;
     setAuthError(null);
 
     if (passwordStrength.score < 3) {
@@ -142,27 +159,52 @@ function RegisterForm() {
     }
 
     setIsSubmitting(true);
+    let succeeded = false;
 
     try {
-      await signUp(email, password, name);
+      // A-3-11: trim email only — mobile keyboards append a trailing
+      // space on autocomplete. Never trim password (legal whitespace).
+      await signUp(email.trim(), password, name);
+      succeeded = true;
       setSuccess(true);
     } catch (error: unknown) {
-      Sentry.addBreadcrumb({ category: 'auth_ui', message: 'auth_error_displayed', data: { page: 'register' } });
+      Sentry.addBreadcrumb({
+        category: 'auth_ui',
+        message: 'auth_error_displayed',
+        data: { page: 'register' },
+      });
       setAuthError(getUserFriendlyMessage(error));
-      setIsSubmitting(false);
+    } finally {
+      // 2026-05-11 (L-D4 / T3-F9): reset spinner unless we just succeeded
+      // (success state renders a different card that handles the redirect).
+      if (!succeeded) {
+        setIsSubmitting(false);
+      }
     }
   };
 
   const handleGoogleSignUp = async () => {
+    if (isSubmitting || isGoogleLoading) return;
     setAuthError(null);
     setIsGoogleLoading(true);
 
     try {
       await signInWithGoogle();
-      setSuccess(true);
+      // 2026-05-11 (Atlas-D5 / F11): do NOT flip setSuccess here. The web
+      // cross-provider conflict path makes signInWithGoogle resolve to
+      // `undefined` while window.location.assign navigates to /account/link
+      // — without this guard, the "Account Created!" screen flashes briefly
+      // before the navigation. The listener-driven useEffect at the top of
+      // this file handles the genuine-success redirect.
     } catch (error: unknown) {
-      Sentry.addBreadcrumb({ category: 'auth_ui', message: 'auth_error_displayed', data: { page: 'register' } });
+      Sentry.addBreadcrumb({
+        category: 'auth_ui',
+        message: 'auth_error_displayed',
+        data: { page: 'register' },
+      });
       setAuthError(getUserFriendlyMessage(error));
+    } finally {
+      // 2026-05-11 (L-D4 / T3-F9): reset spinner — same rationale as login.
       setIsGoogleLoading(false);
     }
   };

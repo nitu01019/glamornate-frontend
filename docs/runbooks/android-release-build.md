@@ -26,7 +26,7 @@
 ## 2. One-shot: `scripts/release-build.sh`
 
 ```bash
-cd <repo-root>
+cd /Users/nitishbhardwaj/Desktop/Glamornate/frontend
 bash scripts/release-build.sh
 ```
 

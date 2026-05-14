@@ -1,7 +1,8 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { useCallback, useEffect, useState } from 'react';
 import {
   ChevronRight,
   User,
@@ -267,7 +268,18 @@ function AuthenticatedHeader({
 
 export default function AccountPage() {
   const { isAuthenticated, isLoading, user, firebaseUser, signOut, refreshUser } = useAuth();
+  const router = useRouter();
   const [shareMessage, setShareMessage] = useState<string | null>(null);
+
+  // Authenticated users get the richer /customer/profile experience (with
+  // working Delete Account sheet + Change Password). This page stays as the
+  // guest-facing surface only — guests land here from the tab bar before
+  // signing in. `router.replace` so back-button doesn't return here.
+  useEffect(() => {
+    if (!isLoading && isAuthenticated) {
+      router.replace('/customer/profile');
+    }
+  }, [isLoading, isAuthenticated, router]);
 
   const handleShareApp = useCallback(() => {
     const url = window.location.origin;
@@ -315,7 +327,9 @@ export default function AccountPage() {
     [firebaseUser, user, refreshUser]
   );
 
-  if (isLoading) {
+  if (isLoading || isAuthenticated) {
+    // Authenticated users see a brief skeleton before the redirect takes
+    // effect; guests never hit this branch.
     return <AccountSkeleton />;
   }
 

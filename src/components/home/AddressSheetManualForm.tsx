@@ -32,7 +32,7 @@
  *   - On expand, focus is moved to the first input (`name`).
  */
 
-import { useCallback, useEffect, useId, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Briefcase, Home, Loader2, Tag } from 'lucide-react';
@@ -40,16 +40,33 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { manualAddressSchema, type ManualAddressInput } from '@/lib/schemas/saved-address';
 import { useAddresses } from '@/lib/addresses/use-addresses';
-import { setActiveLocation, LocationWriteError } from '@/lib/location-writer';
 import { useLocation } from '@/lib/location-provider';
 import { useAuth } from '@/lib/auth-provider';
 import { useToastActions } from '@/lib/providers';
 import { cn } from '@/lib/utils';
-import type { AddressLabel } from '@/types';
+import type { ManualAddressLabel } from '@/types';
 
 // ---------------------------------------------------------------------------
 // Public contract
 // ---------------------------------------------------------------------------
+
+/**
+ * Pre-fillable subset of the form, supplied by the parent when a
+ * partial-GPS resolve triggered this form. The user fills in whatever is
+ * missing and saves; the GPS coords flow through as `geo`. v3 (2026-05-13).
+ */
+export interface ManualFormDefaults {
+  readonly label?: ManualAddressLabel;
+  readonly name?: string;
+  readonly phone?: string;
+  readonly flatHouse?: string;
+  readonly street?: string;
+  readonly landmark?: string;
+  readonly city?: string;
+  readonly state?: string;
+  readonly pincode?: string;
+  readonly geo?: { lat: number; lng: number; accuracy?: number };
+}
 
 export interface AddressSheetManualFormProps {
   /** Whether the form is currently expanded (parent-owned). */
@@ -58,6 +75,11 @@ export interface AddressSheetManualFormProps {
   readonly onClose: () => void;
   /** Called after a successful save. Receives the new address's id. */
   readonly onSaved?: (addressId: string) => void;
+  /**
+   * Pre-fillable defaults — used when the home sheet triggered this form
+   * after a partial GPS resolve. `null` (default) renders an empty form.
+   */
+  readonly defaultValues?: ManualFormDefaults | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -68,7 +90,7 @@ export interface AddressSheetManualFormProps {
 // ---------------------------------------------------------------------------
 
 interface ManualAddressFormValues {
-  readonly label: AddressLabel;
+  readonly label: ManualAddressLabel;
   readonly name: string;
   readonly phone: string;
   readonly flatHouse: string;
@@ -94,7 +116,7 @@ function initialFormValues(): ManualAddressFormValues {
 }
 
 const LABEL_OPTIONS: ReadonlyArray<{
-  readonly value: AddressLabel;
+  readonly value: ManualAddressLabel;
   readonly label: string;
   readonly icon: typeof Home;
 }> = [
@@ -111,14 +133,34 @@ export function AddressSheetManualForm({
   open,
   onClose,
   onSaved,
+  defaultValues,
 }: AddressSheetManualFormProps): JSX.Element | null {
   const uid = useId();
   const toast = useToastActions();
-  const { addAddress } = useAddresses({ runMigration: true });
+  const { addAddress, setDefaultAddress } = useAddresses({ runMigration: true });
   const { user } = useAuth();
   const { setLocation } = useLocation();
 
   const [submitError, setSubmitError] = useState<string | null>(null);
+
+  // Merge parent-supplied defaults (partial-GPS pre-fill) over the empty
+  // template. RHF reads these once on mount; we also `reset()` on `open`
+  // / defaultValues change so re-opening the form picks up fresh values.
+  const mergedDefaults = useMemo<ManualAddressFormValues>(() => {
+    const base = initialFormValues();
+    if (!defaultValues) return base;
+    return {
+      label: defaultValues.label ?? base.label,
+      name: defaultValues.name ?? base.name,
+      phone: defaultValues.phone ?? base.phone,
+      flatHouse: defaultValues.flatHouse ?? base.flatHouse,
+      street: defaultValues.street ?? base.street,
+      landmark: defaultValues.landmark ?? base.landmark,
+      city: defaultValues.city ?? base.city,
+      state: defaultValues.state ?? base.state,
+      pincode: defaultValues.pincode ?? base.pincode,
+    };
+  }, [defaultValues]);
 
   const form = useForm<ManualAddressFormValues>({
     // `manualAddressSchema` has a `.transform` on `landmark` that yields
@@ -127,7 +169,7 @@ export function AddressSheetManualForm({
     // runtime validation rules stay identical.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- `zodResolver` generic infers post-transform type; RHF expects pre-transform. Cast narrows the resolver return to the form-state shape; runtime validation is unaffected.
     resolver: zodResolver(manualAddressSchema) as any,
-    defaultValues: initialFormValues(),
+    defaultValues: mergedDefaults,
     mode: 'onSubmit',
     reValidateMode: 'onSubmit',
   });
@@ -142,13 +184,17 @@ export function AddressSheetManualForm({
     formState: { errors },
   } = form;
 
-  // Reset the form whenever it closes so a fresh expand starts clean.
+  // Reset the form when (a) it closes — so a future expand starts clean —
+  // OR (b) when the parent ships new `defaultValues` while the form is
+  // still open (e.g. user re-tapped GPS with a different partial result).
   useEffect(() => {
     if (!open) {
       reset(initialFormValues());
       setSubmitError(null);
+    } else {
+      reset(mergedDefaults);
     }
-  }, [open, reset]);
+  }, [open, reset, mergedDefaults]);
 
   // On expand, move focus to the first input for keyboard users.
   useEffect(() => {
@@ -221,21 +267,50 @@ export function AddressSheetManualForm({
           state: parsed.state,
           pincode: parsed.pincode,
           isDefault: true,
+          // v3 (2026-05-13): forward any GPS coords captured at the time
+          // the parent triggered this form, so booking flows skip a
+          // second client-side geocode and the map mounts immediately.
+          ...(defaultValues?.geo
+            ? { geo: defaultValues.geo }
+            : {}),
         });
 
+        // v3: promote to default via the modern callable directly. The
+        // legacy `setActiveLocation('saved-address')` path reads the
+        // embedded-array (post-migration it's empty) and would throw
+        // `address-not-found`. We also mirror to the in-memory
+        // LocationProvider so marketplace-era consumers reflect the new
+        // active location on the next render.
         try {
-          await setActiveLocation(
-            { kind: 'saved-address', addressId: result.addressId },
-            { provider: { setLocation } },
-          );
+          await setDefaultAddress.mutateAsync({ addressId: result.addressId });
+        } catch (promoteErr) {
+          // Backend invariant ensures first-address auto-promotion, so this
+          // is best-effort and almost always a no-op when isDefault: true
+          // was honored. Soft-warn but don't fail the overall save.
+          // eslint-disable-next-line no-console
+          console.warn('setDefaultAddress failed (non-fatal):', promoteErr);
+        }
+        try {
+          setLocation({
+            lat: defaultValues?.geo?.lat ?? 0,
+            lng: defaultValues?.geo?.lng ?? 0,
+            city: parsed.city,
+            area: parsed.landmark || parsed.street || parsed.city,
+            fullAddress: [
+              parsed.flatHouse,
+              parsed.street,
+              parsed.landmark,
+              parsed.city,
+              parsed.pincode,
+            ]
+              .filter((s): s is string => Boolean(s && s.length > 0))
+              .join(', '),
+          });
         } catch (writeErr) {
-          // Address was saved but the write-through to the provider failed.
-          // Surface a soft-failure toast — the saved address still exists
-          // and the subscription will catch up on next render.
+          // Address persisted; in-memory publish failed. The snapshot
+          // will catch up on next render. Soft-warn only.
           const msg =
-            writeErr instanceof LocationWriteError
-              ? writeErr.message
-              : writeErr instanceof Error
+            writeErr instanceof Error
               ? writeErr.message
               : 'Saved, but could not publish active location';
           toast.warning('Address saved', msg);
@@ -250,7 +325,7 @@ export function AddressSheetManualForm({
         toast.error('Could not save address', message);
       }
     },
-    [addAddress, onClose, onSaved, setLocation, toast, user],
+    [addAddress, setDefaultAddress, defaultValues, onClose, onSaved, setLocation, toast, user],
   );
 
   if (!open) return null;

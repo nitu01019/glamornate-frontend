@@ -49,11 +49,16 @@ const LOGIN_URL = '/auth/login';
 const LOAD_STATE = 'domcontentloaded' as const;
 
 // Routes that render without auth. Order = document / navigation order.
+// Phase 1 Task 1.1 (2026-05-08, spec-fe-2): legacy /booking deleted
+// (SC-11). The canonical wizard at /customer/book-new is auth-gated
+// (`<ProtectedRoute requiredRoles={['customer']}>`) and is therefore not
+// a "public route" any more — removed from this list rather than swapped.
+// Auth-gated booking surface a11y coverage lives in
+// `tests/e2e/booking-a11y.spec.ts`.
 const PUBLIC_ROUTES: ReadonlyArray<{ readonly label: string; readonly url: string }> = [
   { label: 'home', url: '/' },
   { label: 'services listing', url: '/services' },
   { label: 'services category — massages', url: '/services/category/massages' },
-  { label: 'booking entry', url: '/booking' },
   { label: 'cart', url: '/cart' },
   { label: 'account', url: '/account' },
 ];

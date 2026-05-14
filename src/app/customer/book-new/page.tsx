@@ -16,37 +16,40 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ProtectedRoute } from '@/components/ProtectedRoute';
 import { useAuth } from '@/lib/auth-provider';
-import { useSpas } from '@/hooks/useSpas';
-import { useSpaServices } from '@/hooks/useServices';
+import { useActiveSpa } from '@/hooks/useSpas';
 import { useSpaTherapists } from '@/hooks/useTherapists';
-import { useAvailableSlots } from '@/hooks/useAvailability';
-import { APIProviderRoot } from '@/components/maps/APIProviderRoot';
 import { BookingBottomBar } from './_components/BookingBottomBar';
 import { BookingHeader } from './_components/BookingHeader';
 import { BookingLocationStep } from './_components/BookingLocationStep';
+import { BookingSuccessOverlay } from './_components/BookingSuccessOverlay';
 import { ConfirmStep } from './_components/ConfirmStep';
 import { ScheduleStep } from './_components/ScheduleStep';
-import { ServiceListStep } from './_components/ServiceListStep';
-import { SpaListStep } from './_components/SpaListStep';
-import { formatDateForStorage, generateDates } from './_utils/dateHelpers';
+import { generateDates } from './_utils/dateHelpers';
 import { useBookingWizard } from './_hooks/useBookingWizard';
 import { useBookingSubmission } from './_hooks/useBookingSubmission';
 import { FRESH_START_HINT } from '@/lib/booking/copy';
+import { useCartStore, useHasHydrated } from '@/store/cart';
 
-const STEP_TITLES = [
-  'Select Spa',
-  'Choose Services',
-  'Pick Time',
-  'Confirm Location',
-  'Confirm',
-];
-const TOTAL_STEPS = 5;
+// 2026-05-13 (r2): wizard reduced to 3 cart-driven steps. Services come from
+// the cart store; no in-wizard service picker. Spa auto-resolved via
+// `useActiveSpa()`. Flow: Location → Time → Confirm.
+const STEP_TITLES = ['Home or Salon', 'Pick Date & Time', 'Confirm'];
+const TOTAL_STEPS = 3;
 
 function NewBookingContent() {
   const router = useRouter();
   const { authResolved } = useAuth();
   const { state, actions, reset, canProceed } = useBookingWizard();
-  const { step, selectedSpa, selectedServices, selectedTherapist, selectedDate, selectedTime, bookingLocationKind, customerLocation } = state;
+  const {
+    step,
+    selectedSpa,
+    selectedServices,
+    selectedTherapist,
+    selectedDate,
+    selectedTime,
+    bookingLocationKind,
+    customerLocation,
+  } = state;
 
   // Phase 4.5 (Booking Flow Fix v3.1, 2026-05-02, Patch DR-5): post-success
   // mount hint. After a booking succeeds and we router.replace, the user
@@ -54,6 +57,12 @@ function NewBookingContent() {
   // jump feels abrupt. Auto-dismisses in 10 s; reduced-motion bypasses
   // the animation via the CSS `motion-reduce:` modifier.
   const [showFreshStart, setShowFreshStart] = useState(false);
+
+  // Post-submit celebration. Renders `BookingSuccessOverlay` for ~1.8 s,
+  // then `router.replace`s to the booking detail page. Keeps the wizard
+  // state live during the animation (we reset right before navigating)
+  // so the confetti can read the last total etc. if we ever surface it.
+  const [showSuccess, setShowSuccess] = useState(false);
 
   // Defer `new Date()` to post-mount to avoid SSR/CSR hydration drift.
   const [now, setNow] = useState<Date | null>(null);
@@ -67,49 +76,84 @@ function NewBookingContent() {
     return () => clearTimeout(id);
   }, [showFreshStart]);
 
-  const { data: spas = [], isLoading: spasLoading, error: spasError, refetch: refetchSpas } =
-    useSpas({ status: 'active' });
-  const { data: spaServices = [], isLoading: servicesLoading } = useSpaServices(selectedSpa?.id);
+  // Single-salon: read the one active spa from Firestore and stamp it onto
+  // the wizard. Downstream queries (services, therapists, availability) read
+  // from `selectedSpa.id`, so this is the only place the resolution happens.
+  const activeSpaQuery = useActiveSpa();
+  const activeSpa = activeSpaQuery.data;
+  // Temporary debug — surface the activeSpa state to logcat so we can see
+  // whether the query is loading, errored, or returned null.
+  useEffect(() => {
+    // eslint-disable-next-line no-console
+    console.warn(
+      'page.book-new.activeSpa',
+      JSON.stringify({
+        loading: activeSpaQuery.isLoading,
+        error: activeSpaQuery.error ? String(activeSpaQuery.error) : null,
+        spaId: activeSpa?.id ?? null,
+        spaName: activeSpa?.name ?? null,
+      }),
+    );
+  }, [activeSpaQuery.isLoading, activeSpaQuery.error, activeSpa]);
+  useEffect(() => {
+    if (activeSpa && state.selectedSpa?.id !== activeSpa.id) {
+      actions.setSpa(activeSpa);
+    }
+  }, [activeSpa, state.selectedSpa, actions]);
+
+  // Cart → wizard hydration. The user picks services on the catalog pages and
+  // they land in `useCartStore.items`. When the wizard mounts, we copy those
+  // items into `selectedServices` once (only when the wizard is still empty
+  // and the cart store has finished hydrating from localStorage). If the
+  // cart is empty AND the wizard has no services, the user reached this
+  // route directly — bounce them back to /services so they can pick something.
+  const cartHydrated = useHasHydrated();
+  const cartItems = useCartStore((s) => s.items);
+  const clearCart = useCartStore((s) => s.clearCart);
+  useEffect(() => {
+    if (!cartHydrated) return;
+    if (state.selectedServices.length > 0) return;
+    if (cartItems.length === 0) {
+      router.replace('/services');
+      return;
+    }
+    actions.setServices(cartItems.map((i) => ({ id: i.serviceId, quantity: i.quantity })));
+  }, [cartHydrated, cartItems, state.selectedServices.length, actions, router]);
+
   const { data: therapists = [], isLoading: therapistsLoading } = useSpaTherapists(selectedSpa?.id);
 
   const dates = useMemo(() => (now ? generateDates(now) : []), [now]);
 
-  const totalDuration = useMemo(
-    () =>
-      selectedServices.reduce((total, sel) => {
-        const svc = spaServices.find((s) => s.id === sel.id);
-        const d = svc?.durationOverride ?? svc?.service?.baseDuration ?? 60;
-        return total + d * sel.quantity;
-      }, 0),
-    [selectedServices, spaServices],
+  // Cart-direct totals (Phase 6, 2026-05-13). Was previously joined against
+  // `useSpaServices(spaId)`, which mismatched the cart's catalog `Service.id`
+  // against the per-spa subcollection's `compositeId` → every lookup
+  // returned undefined → ₹0/60min/"Service". The cart already snapshots
+  // name+price+duration at add-time, so we read it directly here.
+  const cartTotal = useMemo(
+    () => cartItems.reduce((sum, item) => sum + item.price * item.quantity, 0),
+    [cartItems],
   );
 
-  const dateStr = selectedDate ? formatDateForStorage(selectedDate) : null;
-  const { data: availabilityData, isLoading: slotsLoading } = useAvailableSlots(
-    selectedSpa?.id && dateStr
-      ? {
-          spaId: selectedSpa.id,
-          date: dateStr,
-          therapistId: selectedTherapist?.id,
-          serviceDuration: totalDuration,
-        }
-      : null,
-  );
-
-  const subtotal = selectedServices.reduce((sum, sel) => {
-    const svc = spaServices.find((s) => s.id === sel.id);
-    const price = svc?.priceOverride ?? svc?.service?.basePrice ?? 0;
-    return sum + price * sel.quantity;
-  }, 0);
-  const tax = Math.round(subtotal * 0.18);
-  const total = subtotal + tax + 50;
-
-  const { submit, isSubmitting, error: submitError, clearError } = useBookingSubmission({
+  const {
+    submit,
+    isSubmitting,
+    error: submitError,
+    clearError,
+  } = useBookingSubmission({
     wizard: state,
+    cartItems,
     onSuccess: (bookingId) => {
-      reset();
+      // Booking confirmed — clear the cart so the next mount starts fresh,
+      // surface the celebration overlay for the user, then navigate to the
+      // booking detail. 1.8 s gives the check-pop animation + the message
+      // its full run; longer feels sluggish, shorter feels rushed.
+      clearCart();
+      setShowSuccess(true);
       setShowFreshStart(true);
-      router.replace(`/customer/bookings/${bookingId}`);
+      window.setTimeout(() => {
+        reset();
+        router.replace(`/customer/bookings/${bookingId}`);
+      }, 1800);
     },
   });
 
@@ -140,29 +184,28 @@ function NewBookingContent() {
         onClose={() => router.push('/customer/dashboard')}
       />
 
-      <main className="flex-1 overflow-y-auto pb-32">
+      <main className="flex-1 overflow-y-auto pb-40">
+        {/* Step 1 — Home or Salon. Services already loaded from cart by the
+            effect above; spa auto-resolved via useActiveSpa(). */}
         {step === 1 && (
-          <SpaListStep
-            spas={spas}
-            isLoading={spasLoading}
-            error={spasError}
-            selectedSpa={selectedSpa}
-            onSelect={actions.setSpa}
-            onRetry={() => refetchSpas()}
+          // <APIProviderRoot> moved to /customer/layout.tsx so Maps JS
+          // is available across the whole customer surface. Plan §6 Step 7.
+          <BookingLocationStep
+            spaCoords={
+              selectedSpa?.location?.geo
+                ? { lat: selectedSpa.location.geo.lat, lng: selectedSpa.location.geo.lng }
+                : null
+            }
+            spaName={selectedSpa?.name ?? null}
+            bookingLocationKind={bookingLocationKind}
+            onKindChange={actions.setLocationKind}
+            onChange={actions.setCustomerLocation}
+            onContinue={actions.nextStep}
+            canProceed={canProceed}
           />
         )}
 
         {step === 2 && (
-          <ServiceListStep
-            spaServices={spaServices}
-            isLoading={servicesLoading}
-            selectedServices={selectedServices}
-            onToggle={actions.toggleService}
-            onQuantityChange={actions.updateServiceQuantity}
-          />
-        )}
-
-        {step === 3 && (
           <ScheduleStep
             therapists={therapists}
             therapistsLoading={therapistsLoading}
@@ -174,66 +217,43 @@ function NewBookingContent() {
             selectedTime={selectedTime}
             onDateSelect={actions.setDate}
             onTimeSelect={actions.setTime}
-            slots={availabilityData?.slots}
-            slotsLoading={slotsLoading}
+            onContinue={actions.nextStep}
+            canProceed={canProceed}
           />
         )}
 
-        {step === 4 && (
-          <APIProviderRoot>
-            <BookingLocationStep
-              spaCoords={
-                selectedSpa?.location?.geo
-                  ? { lat: selectedSpa.location.geo.lat, lng: selectedSpa.location.geo.lng }
-                  : null
-              }
-              spaName={selectedSpa?.name ?? null}
-              bookingLocationKind={bookingLocationKind}
-              onKindChange={actions.setLocationKind}
-              onChange={actions.setCustomerLocation}
-            />
-          </APIProviderRoot>
-        )}
-
-        {step === 5 && (
+        {step === 3 && (
           <ConfirmStep
             selectedSpa={selectedSpa}
-            selectedServices={selectedServices}
-            spaServices={spaServices}
+            cartItems={cartItems}
             selectedDate={selectedDate}
             selectedTime={selectedTime}
             selectedTherapist={selectedTherapist}
-            totalDuration={totalDuration}
-            subtotal={subtotal}
-            tax={tax}
-            total={total}
             bookingLocation={bookingLocationKind}
             customerLocation={customerLocation}
+            onConfirm={submit}
+            isCreating={isSubmitting}
+            errorMessage={submitError}
+            onDismissError={clearError}
           />
         )}
       </main>
 
-      <BookingBottomBar
-        step={step}
-        totalSteps={TOTAL_STEPS}
-        selectedServices={selectedServices}
-        total={total}
-        subtotal={subtotal}
-        isCreating={isSubmitting}
-        canProceed={canProceed}
-        onNext={actions.nextStep}
-        onConfirm={submit}
-      />
-
-      {submitError && (
-        <div
-          role="alert"
-          aria-live="polite"
-          className="fixed bottom-32 left-4 right-4 z-50 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-800 shadow-lg md:left-1/2 md:right-auto md:-translate-x-1/2 md:max-w-md"
-          onClick={clearError}
-        >
-          {submitError}
-        </div>
+      {/* Bottom bar is rendered only on steps 1-2; Step 3 owns its own
+          inline Confirm CTA (single source of truth, removes z-index
+          overlap that previously let the error toast eat the tap). */}
+      {step < TOTAL_STEPS && (
+        <BookingBottomBar
+          step={step}
+          totalSteps={TOTAL_STEPS}
+          selectedServices={selectedServices}
+          total={cartTotal}
+          subtotal={cartTotal}
+          isCreating={isSubmitting}
+          canProceed={canProceed}
+          onNext={actions.nextStep}
+          onConfirm={submit}
+        />
       )}
 
       {showFreshStart && (
@@ -245,6 +265,8 @@ function NewBookingContent() {
           {FRESH_START_HINT}
         </div>
       )}
+
+      <BookingSuccessOverlay open={showSuccess} />
     </div>
   );
 }

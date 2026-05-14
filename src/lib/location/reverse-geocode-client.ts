@@ -5,9 +5,9 @@
  *
  * This module is the single choke-point for turning `(lat, lng)` into an
  * address on the frontend. It normalizes every outcome the Phase-4 backend
- * can produce into a discriminated union so callers (like
- * `location-writer.ts`) can drive UX on a simple `status` tag instead of
- * catching Firebase `HttpsError`s.
+ * can produce into a discriminated union so callers (useCurrentLocation,
+ * LocationMapPin, location-provider) can drive UX on a simple `status` tag
+ * instead of catching Firebase `HttpsError`s.
  *
  * Outcomes (from PHASE_4.md §3.3.2):
  *   - `{ status: 'ok', ... }`              — geocode succeeded.
@@ -99,10 +99,10 @@ function defaultCallable(): ReverseGeocodeCallable {
   // Keep the region in lockstep with the callable's `.region(...)` binding
   // in `backend/functions/src/callable/reverseGeocode.ts`.
   const fns = getFunctions(app, 'us-central1');
-  const fn = httpsCallable<
-    { lat: number; lng: number },
-    CallableSuccessPayload
-  >(fns, 'reverseGeocode');
+  const fn = httpsCallable<{ lat: number; lng: number }, CallableSuccessPayload>(
+    fns,
+    'reverseGeocode',
+  );
   return async (payload) => {
     const res = await fn(payload);
     return { data: res.data };
@@ -177,11 +177,31 @@ export interface ReverseGeocodeOptions {
   readonly callable?: ReverseGeocodeCallable;
 }
 
+// ---------------------------------------------------------------------------
+// In-flight dedupe
+// ---------------------------------------------------------------------------
+//
+// Multiple consumers (HomeLocationSheet GPS row + LocationMapPin drag-end +
+// pre-warm) can request the same coord cell within the same animation
+// frame. Without dedupe each path hits the Firebase callable independently,
+// burning quota and adding round-trips. Keying by the same 4-decimal grid
+// the backend uses (cellIdForCoords) means any (lat, lng) pair that the
+// server would resolve to the same cache cell shares one in-flight promise.
+
+function cellKey(lat: number, lng: number): string {
+  return `${Math.round(lat * 10000) / 10000},${Math.round(lng * 10000) / 10000}`;
+}
+
+const inFlight = new Map<string, Promise<ReverseGeocodeResult>>();
+
 /**
  * Reverse-geocode a coordinate via the `reverseGeocode` callable.
  *
  * Always resolves; never throws for expected business outcomes. Check
  * `result.status` to drive the UI.
+ *
+ * In-flight requests for the same 4-decimal cell are deduped so concurrent
+ * callers share a single network round-trip.
  */
 export async function reverseGeocodeCoords(
   input: { lat: number; lng: number },
@@ -200,9 +220,35 @@ export async function reverseGeocodeCoords(
     return { status: 'invalid-input' };
   }
 
+  // Tests that inject their own callable should bypass the cross-test
+  // shared dedupe map; the map is process-wide and would leak state
+  // between tests if we keyed test invocations into it.
+  if (options.callable) {
+    return runCallable(input, options.callable);
+  }
+
+  const key = cellKey(input.lat, input.lng);
+  const existing = inFlight.get(key);
+  if (existing) return existing;
+
+  const promise = (async () => {
+    try {
+      return await runCallable(input);
+    } finally {
+      inFlight.delete(key);
+    }
+  })();
+  inFlight.set(key, promise);
+  return promise;
+}
+
+async function runCallable(
+  input: { lat: number; lng: number },
+  callable?: ReverseGeocodeCallable,
+): Promise<ReverseGeocodeResult> {
   let invoke: ReverseGeocodeCallable;
   try {
-    invoke = options.callable ?? defaultCallable();
+    invoke = callable ?? defaultCallable();
   } catch (err) {
     log.error('Could not build reverseGeocode callable', err);
     return { status: 'error', message: 'geocode/init-failed' };
@@ -220,10 +266,6 @@ export async function reverseGeocodeCoords(
     };
   } catch (err) {
     const mapped = mapFirebaseError(err);
-    // Intentionally log at `warn` for degradation-path outcomes and `error`
-    // for the catch-all bucket. NEVER log the input coordinates alongside
-    // the key-related error — the key is server-only but we stay
-    // conservative.
     if (mapped.status === 'error') {
       log.error('reverseGeocode failed', err);
     } else {
@@ -231,4 +273,9 @@ export async function reverseGeocodeCoords(
     }
     return mapped;
   }
+}
+
+/** Test-only helper: clear the in-flight dedupe map between tests. */
+export function __resetReverseGeocodeInFlightForTests(): void {
+  inFlight.clear();
 }

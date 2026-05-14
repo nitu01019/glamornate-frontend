@@ -2,9 +2,6 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { doc, getDoc, updateDoc } from 'firebase/firestore';
-import { getFirebaseFirestore } from '@/lib/firebase-client';
-import { useAuth } from '@/lib/auth-provider';
 import { useToastActions } from '@/lib/providers';
 import {
   ArrowLeft,
@@ -13,6 +10,7 @@ import {
   Home,
   Briefcase,
   Tag,
+  Navigation,
   Star,
   Pencil,
   Trash2,
@@ -26,8 +24,9 @@ import {
   DialogDescription,
   DialogFooter,
 } from '@/components/ui/dialog';
-import type { SavedAddress, AddressLabel } from '@/types';
-import { AddressFormDialog } from './_components/AddressFormDialog';
+import { DETECTED_PHONE_SENTINEL, type SavedAddress, type AddressLabel } from '@/types';
+import { useAddresses } from '@/lib/addresses/use-addresses';
+import { AddressFormDialog, type AddressFormPayload } from './_components/AddressFormDialog';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -55,6 +54,15 @@ const LABEL_CONFIG: Record<
     badgeBg: 'bg-gray-100',
     badgeText: 'text-gray-600',
   },
+  // 'detected' is rendered with a subtle maroon accent to signal it's an
+  // auto-saved GPS entry (vs a user-created Home/Work/Other). HomeLocationSheet
+  // keeps at most one 'detected' entry at a time.
+  detected: {
+    icon: Navigation,
+    label: 'Detected',
+    badgeBg: 'bg-brand-maroon-50',
+    badgeText: 'text-brand-maroon-600',
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -63,11 +71,21 @@ const LABEL_CONFIG: Record<
 
 export default function AddressesPage() {
   const router = useRouter();
-  const { firebaseUser } = useAuth();
   const toast = useToastActions();
 
-  const [addresses, setAddresses] = useState<readonly SavedAddress[]>([]);
-  const [loading, setLoading] = useState(true);
+  // v3 (location unification, 2026-05-13): the page now reads + writes via
+  // the `users/{uid}/addresses` subcollection callables instead of the
+  // legacy embedded `users/{uid}.addresses[]` array (which is rule-blocked
+  // on direct client writes since Phase 4A). Same render tree below.
+  const {
+    addresses,
+    isLoading: loading,
+    addAddress,
+    updateAddress,
+    deleteAddress,
+    setDefaultAddress,
+  } = useAddresses();
+
   const [hasMounted, setHasMounted] = useState(false);
 
   // Dialog states
@@ -84,78 +102,53 @@ export default function AddressesPage() {
   }, []);
 
   // -----------------------------------------------------------------------
-  // Fetch addresses from Firestore
-  // -----------------------------------------------------------------------
-  const fetchAddresses = useCallback(async () => {
-    if (!firebaseUser?.uid) return;
-    try {
-      const db = getFirebaseFirestore();
-      const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
-      const data = userDoc.data();
-      setAddresses(data?.addresses ?? []);
-    } catch {
-      toast.error('Failed to load addresses');
-    } finally {
-      setLoading(false);
-    }
-  }, [firebaseUser?.uid, toast]);
-
-  useEffect(() => {
-    fetchAddresses();
-  }, [fetchAddresses]);
-
-  // -----------------------------------------------------------------------
-  // Persist helper
-  // -----------------------------------------------------------------------
-  const persistAddresses = useCallback(
-    async (next: readonly SavedAddress[]) => {
-      if (!firebaseUser?.uid) throw new Error('Not authenticated');
-      const db = getFirebaseFirestore();
-      await updateDoc(doc(db, 'users', firebaseUser.uid), {
-        addresses: next,
-      });
-      setAddresses(next);
-    },
-    [firebaseUser?.uid],
-  );
-
-  // -----------------------------------------------------------------------
   // Add / Edit submit
   // -----------------------------------------------------------------------
   const handleFormSubmit = useCallback(
-    async (data: Omit<SavedAddress, 'id' | 'isDefault' | 'createdAt' | 'updatedAt'>) => {
+    async (data: AddressFormPayload) => {
       try {
-        const now = new Date().toISOString();
-
         if (editingAddress) {
-          // Edit: replace the matching address, keep default/createdAt intact
-          const updated: readonly SavedAddress[] = addresses.map((a) =>
-            a.id === editingAddress.id
-              ? { ...a, ...data, updatedAt: now }
-              : a,
-          );
-          await persistAddresses(updated);
+          await updateAddress.mutateAsync({
+            addressId: editingAddress.id,
+            patch: {
+              label: data.label,
+              name: data.name,
+              phone: data.phone,
+              flatHouse: data.flatHouse,
+              street: data.street,
+              ...(data.landmark ? { landmark: data.landmark } : {}),
+              city: data.city,
+              state: data.state,
+              pincode: data.pincode,
+              ...(data.geo ? { geo: data.geo } : {}),
+            },
+          });
           toast.success('Address updated');
         } else {
-          // Add new address
-          const isFirst = addresses.length === 0;
-          const newAddr: SavedAddress = {
-            ...data,
-            id: `addr_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-            isDefault: isFirst,
-            createdAt: now,
-            updatedAt: now,
-          };
-          await persistAddresses([...addresses, newAddr]);
+          await addAddress.mutateAsync({
+            label: data.label,
+            name: data.name,
+            phone: data.phone,
+            flatHouse: data.flatHouse,
+            street: data.street,
+            ...(data.landmark ? { landmark: data.landmark } : {}),
+            city: data.city,
+            state: data.state,
+            pincode: data.pincode,
+            isDefault: addresses.length === 0,
+            ...(data.geo ? { geo: data.geo } : {}),
+          });
           toast.success('Address added');
         }
         setFormOpen(false);
         setEditingAddress(null);
-      } catch {
-        toast.error('Something went wrong. Please try again.');
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : 'Something went wrong. Please try again.';
+        toast.error(message);
       }
     },
-    [addresses, editingAddress, persistAddresses, toast],
+    [addAddress, updateAddress, addresses.length, editingAddress, toast],
   );
 
   // -----------------------------------------------------------------------
@@ -165,14 +158,10 @@ export default function AddressesPage() {
     if (!deleteTarget) return;
     setDeleting(true);
     try {
-      const remaining = addresses.filter((a) => a.id !== deleteTarget.id);
-      // If the deleted address was default, promote the first remaining
-      const needsNewDefault =
-        deleteTarget.isDefault && remaining.length > 0;
-      const updated: readonly SavedAddress[] = needsNewDefault
-        ? remaining.map((a, i) => (i === 0 ? { ...a, isDefault: true } : a))
-        : remaining;
-      await persistAddresses(updated);
+      // The backend `deleteAddress` callable handles default-promotion
+      // (returns `promotedDefault?: string`) inside the same transaction
+      // so the "exactly one default" invariant survives.
+      await deleteAddress.mutateAsync({ addressId: deleteTarget.id });
       toast.success('Address removed');
       setDeleteTarget(null);
     } catch {
@@ -180,7 +169,7 @@ export default function AddressesPage() {
     } finally {
       setDeleting(false);
     }
-  }, [deleteTarget, addresses, persistAddresses, toast]);
+  }, [deleteTarget, deleteAddress, toast]);
 
   // -----------------------------------------------------------------------
   // Set Default
@@ -188,18 +177,13 @@ export default function AddressesPage() {
   const handleSetDefault = useCallback(
     async (id: string) => {
       try {
-        const updated: readonly SavedAddress[] = addresses.map((a) => ({
-          ...a,
-          isDefault: a.id === id,
-          updatedAt: a.id === id ? new Date().toISOString() : a.updatedAt,
-        }));
-        await persistAddresses(updated);
+        await setDefaultAddress.mutateAsync({ addressId: id });
         toast.success('Default address updated');
       } catch {
         toast.error('Failed to update default address');
       }
     },
-    [addresses, persistAddresses, toast],
+    [setDefaultAddress, toast],
   );
 
   // -----------------------------------------------------------------------
@@ -216,9 +200,7 @@ export default function AddressesPage() {
   };
 
   const formatAddress = (a: SavedAddress): string =>
-    [a.flatHouse, a.street, a.landmark, a.city, a.state, a.pincode]
-      .filter(Boolean)
-      .join(', ');
+    [a.flatHouse, a.street, a.landmark, a.city, a.state, a.pincode].filter(Boolean).join(', ');
 
   // -----------------------------------------------------------------------
   // Render
@@ -253,9 +235,7 @@ export default function AddressesPage() {
         {loading && <AddressSkeleton />}
 
         {/* Empty state */}
-        {!loading && addresses.length === 0 && (
-          <EmptyAddresses onAdd={openAddDialog} />
-        )}
+        {!loading && addresses.length === 0 && <EmptyAddresses onAdd={openAddDialog} />}
 
         {/* Address list */}
         {!loading && addresses.length > 0 && (
@@ -296,8 +276,7 @@ export default function AddressesPage() {
           <DialogHeader>
             <DialogTitle className="text-gray-900">Remove Address</DialogTitle>
             <DialogDescription className="text-gray-500 text-sm">
-              Are you sure you want to remove this address? This action cannot be
-              undone.
+              Are you sure you want to remove this address? This action cannot be undone.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="flex flex-row gap-3 mt-2">
@@ -334,13 +313,7 @@ interface AddressCardProps {
   readonly formatAddress: (a: SavedAddress) => string;
 }
 
-function AddressCard({
-  address,
-  onEdit,
-  onDelete,
-  onSetDefault,
-  formatAddress,
-}: AddressCardProps) {
+function AddressCard({ address, onEdit, onDelete, onSetDefault, formatAddress }: AddressCardProps) {
   const config = LABEL_CONFIG[address.label];
   const LabelIcon = config.icon;
 
@@ -363,14 +336,20 @@ function AddressCard({
           )}
         </div>
 
-        {/* Name + phone */}
+        {/* Name + phone — GPS auto-saved entries use a sentinel phone
+            ('0000000') and a generated name; render a friendlier line
+            instead of the literal sentinel digits. */}
         <p className="text-sm font-semibold text-gray-900">{address.name}</p>
-        <p className="text-sm text-gray-500 mt-0.5">{address.phone}</p>
+        {address.label === 'detected' && address.phone === DETECTED_PHONE_SENTINEL ? (
+          <p className="text-sm text-gray-500 mt-0.5">
+            GPS detected · tap edit to label this Home or Work
+          </p>
+        ) : (
+          <p className="text-sm text-gray-500 mt-0.5">{address.phone}</p>
+        )}
 
         {/* Address text */}
-        <p className="text-sm text-gray-600 mt-2 leading-relaxed">
-          {formatAddress(address)}
-        </p>
+        <p className="text-sm text-gray-600 mt-2 leading-relaxed">{formatAddress(address)}</p>
 
         {/* Actions */}
         <div className="flex items-center gap-2 mt-3 pt-3 border-t border-gray-100">
@@ -414,9 +393,7 @@ function EmptyAddresses({ onAdd }: { readonly onAdd: () => void }) {
       <div className="w-16 h-16 rounded-full bg-brand-maroon-50 flex items-center justify-center mb-4">
         <MapPin className="w-8 h-8 text-brand-maroon-400" />
       </div>
-      <h2 className="text-lg font-semibold text-gray-900 mb-1">
-        No saved addresses
-      </h2>
+      <h2 className="text-lg font-semibold text-gray-900 mb-1">No saved addresses</h2>
       <p className="text-sm text-gray-500 mb-6 max-w-[260px]">
         Add your first address for quick and easy home service bookings.
       </p>

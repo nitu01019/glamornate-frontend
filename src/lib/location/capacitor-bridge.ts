@@ -32,7 +32,12 @@ export interface BridgeCoords {
   readonly accuracy: number;
 }
 
-export type PermissionStatus = 'granted' | 'denied' | 'prompt' | 'prompt-with-rationale' | 'unknown';
+export type PermissionStatus =
+  | 'granted'
+  | 'denied'
+  | 'prompt'
+  | 'prompt-with-rationale'
+  | 'unknown';
 
 export interface RequestPositionOptions {
   readonly enableHighAccuracy?: boolean;
@@ -58,10 +63,7 @@ export type PlatformKind = 'capacitor-native' | 'web' | 'unsupported';
  * distinct from a hard denial (`isPermanentlyDenied: false`).
  */
 export class LocationPermissionDeniedError extends Error {
-  constructor(
-    message: string,
-    public readonly isPermanentlyDenied: boolean,
-  ) {
+  constructor(message: string, public readonly isPermanentlyDenied: boolean) {
     super(message);
     this.name = 'LocationPermissionDeniedError';
     if (Error.captureStackTrace) {
@@ -76,11 +78,11 @@ export class LocationPermissionDeniedError extends Error {
 
 const DEFAULTS: Required<RequestPositionOptions> = {
   enableHighAccuracy: false,
-  // 30 s — high-accuracy GPS cold lock on Android can take 15–45 s outdoors.
-  // Below 30 s the user routinely sees the plugin's stock "could not obtain
-  // location in time" error even on healthy devices. The fallback chain in
-  // requestPositionWithFallback() further bounds total wall time.
-  timeout: 30_000,
+  // 12 s outer ceiling: matches useCurrentLocation's withTimeout and the
+  // Swiggy/Zomato perceived-latency target. requestPositionWithFallback()
+  // runs four bounded steps inside this budget; if all fail we fall back
+  // to the OS lastKnownLocation rather than throw.
+  timeout: 12_000,
   maximumAge: 300_000,
 };
 
@@ -121,7 +123,9 @@ interface CapacitorGeolocationModule {
     }) => Promise<{ coords: BridgeCoords }>;
     // Capacitor 8 ships getLastKnownLocation; older versions don't.
     // Optional — caller checks for presence before invoking.
-    getLastKnownLocation?: (opts?: { maximumAge?: number }) => Promise<{ coords: BridgeCoords } | null>;
+    getLastKnownLocation?: (opts?: {
+      maximumAge?: number;
+    }) => Promise<{ coords: BridgeCoords } | null>;
   };
 }
 
@@ -185,8 +189,9 @@ export async function checkLocationPermission(): Promise<PermissionStatus> {
         'function'
     ) {
       try {
-        const status = await (navigator as Navigator & { permissions: Permissions })
-          .permissions.query({ name: 'geolocation' as PermissionName });
+        const status = await (
+          navigator as Navigator & { permissions: Permissions }
+        ).permissions.query({ name: 'geolocation' as PermissionName });
         return normalizePermissionState(status.state);
       } catch {
         return 'unknown';
@@ -256,8 +261,7 @@ export async function requestLocationPermissionWithReason(): Promise<LocationPer
         permissions: ['location'],
       });
       const postState = normalizePermissionState(res.location);
-      const isPermanentlyDenied =
-        postState === 'denied' && preState === 'denied';
+      const isPermanentlyDenied = postState === 'denied' && preState === 'denied';
       return { status: postState, isPermanentlyDenied };
     } catch {
       return {
@@ -344,9 +348,7 @@ export async function getCurrentPosition(
   throw new Error('Geolocation is not available in this runtime');
 }
 
-function getPositionFromBrowser(
-  options: Required<RequestPositionOptions>,
-): Promise<BridgeCoords> {
+function getPositionFromBrowser(options: Required<RequestPositionOptions>): Promise<BridgeCoords> {
   return new Promise<BridgeCoords>((resolve, reject) => {
     if (typeof navigator === 'undefined' || !navigator.geolocation) {
       reject(new Error('Geolocation is not available in this runtime'));
@@ -504,10 +506,13 @@ export async function requestPositionWithFallback(
   }
 
   // Step 2 — network/wifi-based fix. Fast, coarse.
+  // 8 s budget: typical 1–5 s indoors on a healthy device. Tighter than
+  // the legacy 30 s so we fail fast into step 3 / step 4 when WiFi is
+  // dead.
   try {
     const res = await plugin.Geolocation.getCurrentPosition({
       enableHighAccuracy: false,
-      timeout: 30_000,
+      timeout: 8_000,
       maximumAge: 60_000,
     });
     return {
@@ -534,10 +539,12 @@ export async function requestPositionWithFallback(
   }
 
   // Step 3 — GPS-only retry. Slow but accurate.
+  // 10 s budget: tight enough to fail-fast on a cold indoor device,
+  // generous enough for outdoor lock.
   try {
     const res = await plugin.Geolocation.getCurrentPosition({
       enableHighAccuracy: true,
-      timeout: 30_000,
+      timeout: 10_000,
       maximumAge: 0,
     });
     return {
@@ -545,9 +552,37 @@ export async function requestPositionWithFallback(
       longitude: res.coords.longitude,
       accuracy: res.coords.accuracy,
     };
-  } catch (err) {
-    throw new Error(
-      `Could not determine location after multiple attempts: ${err instanceof Error ? err.message : 'unknown error'}`,
-    );
+  } catch {
+    // Fall through to step 4 — last-known-location of last resort.
   }
+
+  // Step 4 — final fallback. If steps 1–3 all timed out, give the user
+  // *something* (the most recent OS fix up to 5 min old) rather than a
+  // hard error pill. Permission-denied was short-circuited in step 2 so
+  // reaching here means the OS just couldn't get a fresh fix.
+  //
+  // Reachability note (per red-team T-A5): `useCurrentLocation` wraps this
+  // entire fallback chain in `withTimeout(12_000)`. Worst case: step 2
+  // burns 8 s, step 3 starts at t≈8 s, the outer 12 s wall aborts step 3
+  // at t≈12 s — step 4 only runs when steps 1+2+3 collectively resolve
+  // before the wall. That's true when step 2 succeeds quickly + step 3
+  // fails fast, OR when a direct caller bypasses `useCurrentLocation`
+  // (no current consumer does, but `requestPositionWithFallback` is
+  // exported so this is the documented contract).
+  if (typeof plugin.Geolocation.getLastKnownLocation === 'function') {
+    try {
+      const last = await plugin.Geolocation.getLastKnownLocation({ maximumAge: 5 * 60_000 });
+      if (last && last.coords && typeof last.coords.latitude === 'number') {
+        return {
+          latitude: last.coords.latitude,
+          longitude: last.coords.longitude,
+          accuracy: last.coords.accuracy,
+        };
+      }
+    } catch {
+      // Ignore — fall through to the final throw.
+    }
+  }
+
+  throw new Error('Could not determine location after multiple attempts');
 }

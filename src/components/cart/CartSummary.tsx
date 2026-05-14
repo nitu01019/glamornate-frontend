@@ -46,7 +46,12 @@ export default function CartSummary({ onProceed, isValidating = false }: CartSum
   const formattedTotal = `\u20B9${(hasDiscount ? discountedTotal : total).toLocaleString('en-IN')}`;
   const durationText = formatDuration(totalDuration);
 
-  const buttonDestination = hasMounted && isAuthenticated ? '/booking' : '/auth/login';
+  // Phase 1 SC-11 (Round 1, 2026-05-08): the legacy /booking route was
+  // deleted in commit 2bd0bc00. spec-logic-check-2 caught that this caller
+  // still pointed at /booking — every authenticated cart checkout was
+  // returning 404 (canonical revenue path broken). Canonical wizard is
+  // /customer/book-new (mounted by `frontend/src/app/customer/book-new/page.tsx`).
+  const buttonDestination = hasMounted && isAuthenticated ? '/customer/book-new' : '/auth/login';
   const buttonText = hasMounted && isAuthenticated ? 'Proceed to Book' : 'Login to Book';
 
   return (

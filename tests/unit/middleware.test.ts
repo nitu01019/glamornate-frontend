@@ -85,18 +85,10 @@ describe('Middleware', () => {
     vi.clearAllMocks();
   });
 
-  // UT-11: API route without auth token returns 401
-  it('UT-11: returns 401 JSON for protected API route without auth token', () => {
-    const req = createMockRequest({ pathname: '/api/customer/bookings' });
-
-    const result = middleware(req);
-
-    expect(mockNextResponseJson).toHaveBeenCalledWith(
-      { error: 'Authentication required' },
-      { status: 401 }
-    );
-    expect(result).toMatchObject({ status: 401 });
-  });
+  // L-1 (2026-05-11): UT-11, UT-15, the __session-cookie test, and the
+  // /api/spa 401 test were deleted along with the dead `protectedRoutes`
+  // middleware gate. The paths they exercised — /api/admin|customer|spa/* —
+  // have no corresponding Next.js route handlers in src/app/api/.
 
   // UT-12: Page route /customer/dashboard passes through
   it('UT-12: passes through page route /customer/dashboard without redirect', () => {
@@ -129,7 +121,8 @@ describe('Middleware', () => {
     const expectedHeaders: Array<[string, string | RegExp]> = [
       ['X-Content-Type-Options', 'nosniff'],
       ['X-Frame-Options', 'DENY'],
-      ['X-XSS-Protection', '1; mode=block'],
+      // 2026-05-11 (T3-F60): X-XSS-Protection dropped (deprecated header,
+      // OWASP recommends omitting; CSP supersedes).
       ['Referrer-Policy', 'strict-origin-when-cross-origin'],
       ['Strict-Transport-Security', /max-age=31536000/],
       ['Content-Security-Policy', /default-src 'self'/],
@@ -141,7 +134,7 @@ describe('Middleware', () => {
         expect(mockHeadersSet).toHaveBeenCalledWith(headerName, expected);
       } else {
         const matchingCall = mockHeadersSet.mock.calls.find(
-          ([key]: [string]) => key === headerName
+          ([key]: [string]) => key === headerName,
         );
         expect(matchingCall).toBeDefined();
         expect(matchingCall[1]).toMatch(expected);
@@ -149,54 +142,14 @@ describe('Middleware', () => {
     }
   });
 
-  // UT-15: API route with valid auth token passes through
-  it('UT-15: passes through protected API route with authorization header', () => {
-    const req = createMockRequest({
-      pathname: '/api/customer/bookings',
-      headers: { authorization: 'Bearer valid-token-123' },
-    });
-
-    const result = middleware(req);
-
-    expect(mockNextResponseJson).not.toHaveBeenCalled();
-    expect(mockNextResponseNext).toHaveBeenCalled();
-    expect(result).toHaveProperty('headers');
-  });
-
-  // Additional: API route with cookie-based auth passes through
-  it('passes through protected API route with __session cookie', () => {
-    const req = createMockRequest({
-      pathname: '/api/admin/dashboard',
-      cookies: { __session: 'session-token-abc' },
-    });
-
-    const result = middleware(req);
-
-    expect(mockNextResponseJson).not.toHaveBeenCalled();
-    expect(mockNextResponseNext).toHaveBeenCalled();
-    expect(result).toHaveProperty('headers');
-  });
-
-  // Additional: Non-protected API routes pass through without auth
-  it('passes through non-protected API route without auth', () => {
+  // Non-protected API routes pass through without auth (sanity check that
+  // middleware doesn't block API routes now that the dead gate is gone).
+  it('passes through API routes without auth (L-1: gate removed)', () => {
     const req = createMockRequest({ pathname: '/api/v1/health' });
 
     const result = middleware(req);
 
     expect(mockNextResponseJson).not.toHaveBeenCalled();
     expect(mockNextResponseNext).toHaveBeenCalled();
-  });
-
-  // Additional: Protected API /api/spa routes without auth
-  it('returns 401 for protected /api/spa route without auth', () => {
-    const req = createMockRequest({ pathname: '/api/spa/services' });
-
-    const result = middleware(req);
-
-    expect(mockNextResponseJson).toHaveBeenCalledWith(
-      { error: 'Authentication required' },
-      { status: 401 }
-    );
-    expect(result).toMatchObject({ status: 401 });
   });
 });

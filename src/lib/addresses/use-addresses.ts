@@ -30,22 +30,13 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import {
-  useMutation,
-  useQueryClient,
-  type UseMutationResult,
-} from '@tanstack/react-query';
-import {
-  collection,
-  onSnapshot,
-  query,
-  type FirestoreError,
-} from 'firebase/firestore';
+import { useMutation, useQueryClient, type UseMutationResult } from '@tanstack/react-query';
+import { collection, onSnapshot, query, type FirestoreError } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { useAuth } from '@/lib/auth-provider';
 import { getFirebaseApp, getFirebaseFirestore } from '@/lib/firebase-client';
 import { logger } from '@/lib/logger';
-import type { AddressLabel, SavedAddress } from '@/types';
+import type { AddressLabel, ManualAddressLabel, SavedAddress } from '@/types';
 
 const log = logger.child({ component: 'useAddresses' });
 
@@ -87,7 +78,17 @@ export interface AddAddressResponse {
   readonly isDefault: boolean;
 }
 
-export type AddressPatch = Partial<Omit<AddAddressInput, 'isDefault'>>;
+/**
+ * Patch shape — matches backend `AddressPatchSchema`. `label` is narrowed to
+ * `ManualAddressLabel` because patching an address TO `'detected'` is
+ * server-rejected (would let a malicious client convert any saved address
+ * into a pruneable GPS-auto-save entry). Promoting a `'detected'` entry
+ * to home/work IS allowed; the user re-categorises by editing the entry,
+ * not by patching the existing one to `'detected'`.
+ */
+export type AddressPatch = Partial<
+  Omit<AddAddressInput, 'isDefault' | 'label'> & { label: ManualAddressLabel }
+>;
 
 export interface UpdateAddressInput {
   readonly addressId: string;
@@ -164,36 +165,24 @@ function invokeCallable<TReq, TRes>(name: string) {
   };
 }
 
-export const addAddressCallable = (
-  input: AddAddressInput,
-): Promise<AddAddressResponse> =>
+export const addAddressCallable = (input: AddAddressInput): Promise<AddAddressResponse> =>
   invokeCallable<AddAddressInput, AddAddressResponse>('addAddress')(input);
 
-export const updateAddressCallable = (
-  input: UpdateAddressInput,
-): Promise<UpdateAddressResponse> =>
-  invokeCallable<UpdateAddressInput, UpdateAddressResponse>('updateAddress')(
-    input,
-  );
+export const updateAddressCallable = (input: UpdateAddressInput): Promise<UpdateAddressResponse> =>
+  invokeCallable<UpdateAddressInput, UpdateAddressResponse>('updateAddress')(input);
 
-export const deleteAddressCallable = (
-  input: DeleteAddressInput,
-): Promise<DeleteAddressResponse> =>
-  invokeCallable<DeleteAddressInput, DeleteAddressResponse>('deleteAddress')(
-    input,
-  );
+export const deleteAddressCallable = (input: DeleteAddressInput): Promise<DeleteAddressResponse> =>
+  invokeCallable<DeleteAddressInput, DeleteAddressResponse>('deleteAddress')(input);
 
 export const setDefaultAddressCallable = (
   input: SetDefaultAddressInput,
 ): Promise<SetDefaultAddressResponse> =>
-  invokeCallable<SetDefaultAddressInput, SetDefaultAddressResponse>(
-    'setDefaultAddress',
-  )(input);
+  invokeCallable<SetDefaultAddressInput, SetDefaultAddressResponse>('setDefaultAddress')(input);
 
 export const migrateAddressesCallable = (): Promise<MigrationResponse> =>
-  invokeCallable<Record<string, never>, MigrationResponse>(
-    'migrateAddressesToSubcollection',
-  )({} as Record<string, never>);
+  invokeCallable<Record<string, never>, MigrationResponse>('migrateAddressesToSubcollection')(
+    {} as Record<string, never>,
+  );
 
 /**
  * Injectable surface used by tests / Storybook to swap the 5 callables with
@@ -240,10 +229,7 @@ function normaliseTimestamp(value: unknown): string {
   return '';
 }
 
-function toSavedAddress(
-  id: string,
-  raw: FirestoreAddressDoc,
-): SavedAddress {
+function toSavedAddress(id: string, raw: FirestoreAddressDoc): SavedAddress {
   const addr: SavedAddress = {
     id,
     label: raw.label,
@@ -287,21 +273,9 @@ export interface UseAddressesResult {
   readonly addresses: readonly SavedAddress[];
   readonly isLoading: boolean;
   readonly error: Error | null;
-  readonly addAddress: UseMutationResult<
-    AddAddressResponse,
-    Error,
-    AddAddressInput
-  >;
-  readonly updateAddress: UseMutationResult<
-    UpdateAddressResponse,
-    Error,
-    UpdateAddressInput
-  >;
-  readonly deleteAddress: UseMutationResult<
-    DeleteAddressResponse,
-    Error,
-    DeleteAddressInput
-  >;
+  readonly addAddress: UseMutationResult<AddAddressResponse, Error, AddAddressInput>;
+  readonly updateAddress: UseMutationResult<UpdateAddressResponse, Error, UpdateAddressInput>;
+  readonly deleteAddress: UseMutationResult<DeleteAddressResponse, Error, DeleteAddressInput>;
   readonly setDefaultAddress: UseMutationResult<
     SetDefaultAddressResponse,
     Error,
@@ -318,9 +292,7 @@ export interface UseAddressesResult {
  * cache directly so downstream consumers re-render on any server-side
  * change (other devices, callable side-effects, etc).
  */
-export function useAddresses(
-  options: UseAddressesOptions = {},
-): UseAddressesResult {
+export function useAddresses(options: UseAddressesOptions = {}): UseAddressesResult {
   const { firebaseUser } = useAuth();
   const uid = firebaseUser?.uid ?? null;
   const queryClient = useQueryClient();
@@ -371,10 +343,7 @@ export function useAddresses(
         });
         setAddressesState(next);
         setIsLoading(false);
-        queryClient.setQueryData<readonly SavedAddress[]>(
-          addressesQueryKey(uid),
-          next,
-        );
+        queryClient.setQueryData<readonly SavedAddress[]>(addressesQueryKey(uid), next);
       },
       (err: FirestoreError) => {
         log.warn('Addresses subscription error', { code: err.code });
@@ -433,33 +402,21 @@ export function useAddresses(
     },
   });
 
-  const updateMutation = useMutation<
-    UpdateAddressResponse,
-    Error,
-    UpdateAddressInput
-  >({
+  const updateMutation = useMutation<UpdateAddressResponse, Error, UpdateAddressInput>({
     mutationFn: (input) => callables.updateAddress(input),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: addressesQueryKey(uid) });
     },
   });
 
-  const deleteMutation = useMutation<
-    DeleteAddressResponse,
-    Error,
-    DeleteAddressInput
-  >({
+  const deleteMutation = useMutation<DeleteAddressResponse, Error, DeleteAddressInput>({
     mutationFn: (input) => callables.deleteAddress(input),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: addressesQueryKey(uid) });
     },
   });
 
-  const setDefaultMutation = useMutation<
-    SetDefaultAddressResponse,
-    Error,
-    SetDefaultAddressInput
-  >({
+  const setDefaultMutation = useMutation<SetDefaultAddressResponse, Error, SetDefaultAddressInput>({
     mutationFn: (input) => callables.setDefaultAddress(input),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: addressesQueryKey(uid) });

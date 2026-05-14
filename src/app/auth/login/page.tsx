@@ -11,7 +11,13 @@ import type { UserRole } from '@/types';
 import { getUserFriendlyMessage } from '@/lib/error-handler';
 import * as Sentry from '@sentry/nextjs';
 
-function getRoleDashboard(role: UserRole | undefined): string {
+function getRoleDashboard(role: UserRole | undefined, hasSpaData: boolean = true): string {
+  // spa_owner with null spaData hits /spa/dashboard and crashes on
+  // undefined spaId — fall back to /customer/dashboard until the spa doc
+  // exists. Sentry breadcrumb is emitted by lookupSpaData on miss.
+  if (role === 'spa_owner' && !hasSpaData) {
+    return '/customer/dashboard';
+  }
   const dashboards: Record<UserRole, string> = {
     customer: '/customer/dashboard',
     spa_owner: '/spa/dashboard',
@@ -146,43 +152,114 @@ function LoginForm() {
 
   const rawCallbackUrl = searchParams.get('callbackUrl') || searchParams.get('redirect');
 
-  // Validate callbackUrl: must be a relative path starting with "/" and NOT "//"
-  // to prevent open redirect attacks (e.g., "//evil.com" or "https://evil.com")
-  const callbackUrl =
-    rawCallbackUrl && rawCallbackUrl.startsWith('/') && !rawCallbackUrl.startsWith('//')
-      ? rawCallbackUrl
-      : null;
+  // A-3-07: Validate callbackUrl as a defence-in-depth open-redirect guard.
+  // Only relative paths starting with "/" (and not "//", "/\", etc.) are
+  // accepted. We additionally reject backslash, "@" (URL userinfo
+  // smuggling) and control chars (CR/LF/TAB/NUL — header injection).
+  const callbackUrl = (() => {
+    if (!rawCallbackUrl) return null;
+    if (!rawCallbackUrl.startsWith('/')) return null;
+    if (rawCallbackUrl.startsWith('//')) return null;
+    if (rawCallbackUrl.startsWith('/\\')) return null;
+    if (/[\\@]/.test(rawCallbackUrl)) return null;
+    if (/[\r\n\t\0]/.test(rawCallbackUrl)) return null;
+    return rawCallbackUrl;
+  })();
 
   useEffect(() => {
     if (isAuthenticated && user && !authLoading) {
-      const redirectUrl = callbackUrl || getRoleDashboard(user.role);
+      const redirectUrl = callbackUrl || getRoleDashboard(user.role, !!user.spaData?.spaId);
       router.replace(redirectUrl);
     }
   }, [isAuthenticated, user, authLoading, callbackUrl, router]);
 
+  // 2026-05-11 (Atlas-D1 + Cinder-D2 / F2): if a Google redirect-flow
+  // createUserProfile failed, the auth-provider stashed the failure in
+  // sessionStorage before the listener orphan-cleaned the user. Surface a
+  // banner so the user understands why they landed on the login page.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    let stash: string | null = null;
+    try {
+      stash = sessionStorage.getItem('glamornate.redirectProfileError');
+      if (stash) sessionStorage.removeItem('glamornate.redirectProfileError');
+    } catch {
+      return;
+    }
+    if (stash) {
+      setAuthError(
+        'Sign-in with Google completed, but we could not finish setting up your account. Please try again — if this keeps happening, contact support.',
+      );
+    }
+  }, []);
+
+  // 2026-05-11 (L-D10 / T3-F48): when the backend revokes the session
+  // (token-revoked envelope), the api-client's onTokenRevoked handler
+  // sweeps + hard-navigates to `/auth/login?reason=session_expired`
+  // (F17). Surface a banner so the user understands why they were signed
+  // out, instead of seeing a bare login form.
+  const reason = searchParams.get('reason');
+  useEffect(() => {
+    if (reason === 'session_expired') {
+      setAuthError('Your session has expired. Please sign in again.');
+      // 2026-05-11 (Charlie-γ7): strip the reason param so the banner does
+      // not re-fire on re-renders or persist across the user's next submit.
+      // router.replace updates history in-place without a navigation.
+      const url = new URL(window.location.href);
+      url.searchParams.delete('reason');
+      router.replace(`${url.pathname}${url.search}${url.hash}`);
+    }
+  }, [reason, router]);
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    // 2026-05-11 (P-D1 / T3-F50): top-of-handler guard against
+    // double-submit. The submit button is disabled while `isLoading` is
+    // true, but on iOS Safari and some Android IMEs the Enter key
+    // bypasses the disabled state on the form submit. Guard explicitly.
+    if (isSubmitting || isGoogleLoading) return;
     setAuthError(null);
     setIsSubmitting(true);
 
     try {
-      await signIn(email, password);
+      // A-3-11: trim email only — mobile keyboards append a trailing
+      // space on autocomplete. Never trim password (legal whitespace).
+      await signIn(email.trim(), password);
     } catch (error: unknown) {
-      Sentry.addBreadcrumb({ category: 'auth_ui', message: 'auth_error_displayed', data: { page: 'login' } });
+      Sentry.addBreadcrumb({
+        category: 'auth_ui',
+        message: 'auth_error_displayed',
+        data: { page: 'login' },
+      });
       setAuthError(getUserFriendlyMessage(error));
+    } finally {
+      // 2026-05-11 (L-D4 / T3-F9): move reset to `finally`. Web
+      // cross-provider paths in `signIn` resolve void via
+      // `window.location.assign + return` — the catch never fires and the
+      // spinner spun forever during slow navigation. `finally` always
+      // runs; if navigation IS happening the unmount swallows the state
+      // update; if NOT, the user sees the form again with the error.
       setIsSubmitting(false);
     }
   };
 
   const handleGoogleSignIn = async () => {
+    // 2026-05-11 (P-D1 / T3-F50): same guard as handleLogin.
+    if (isSubmitting || isGoogleLoading) return;
     setAuthError(null);
     setIsGoogleLoading(true);
 
     try {
       await signInWithGoogle();
     } catch (error: unknown) {
-      Sentry.addBreadcrumb({ category: 'auth_ui', message: 'auth_error_displayed', data: { page: 'login' } });
+      Sentry.addBreadcrumb({
+        category: 'auth_ui',
+        message: 'auth_error_displayed',
+        data: { page: 'login' },
+      });
       setAuthError(getUserFriendlyMessage(error));
+    } finally {
+      // 2026-05-11 (L-D4 / T3-F9): see handleLogin comment above.
       setIsGoogleLoading(false);
     }
   };

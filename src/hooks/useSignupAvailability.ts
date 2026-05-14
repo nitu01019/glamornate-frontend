@@ -22,22 +22,18 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   CheckSignupAvailabilityRequest,
   CheckSignupAvailabilityResponse,
-} from '@/lib/contracts';
+} from '@/shared/contracts';
 import { firebaseClientWrapper } from '@/lib/firebase-client-wrapper';
 import { getAppCheckToken } from '@/lib/app-check';
 import { useDebounceValue } from './useDebounceValue';
 import { logger } from '@/lib/logger';
+import { AppCheckError } from '@/lib/error-handler';
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-/**
- * @deprecated 'error' will never be set by this hook (silent-fail pattern).
- * Kept in the union for backwards compatibility with callers that type-guard
- * against it. It is safe to remove from call-site switch/case statements.
- */
-export type SignupAvailabilityStatus = 'idle' | 'checking' | 'available' | 'taken' | 'error';
+export type SignupAvailabilityStatus = 'idle' | 'checking' | 'available' | 'taken';
 
 export interface SignupAvailabilityResult {
   status: SignupAvailabilityStatus;
@@ -71,6 +67,10 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PHONE_RE = /^\+?[1-9]\d{6,14}$/;
 const APP_CHECK_TIMEOUT_MS = 2000;
 const RETRY_DELAY_MS = 1000;
+const DEBOUNCE_MS = 300;
+// Couple the immediate-flag reset to the debounce window so a subsequent
+// onChange after triggerCheck is not erroneously suppressed (A-5-04).
+const IMMEDIATE_FLAG_RESET_MS = DEBOUNCE_MS + 50;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -112,7 +112,7 @@ export function useSignupAvailability(
 ): SignupAvailabilityResult {
   const trigger = options?.trigger ?? 'both';
 
-  const debounced = useDebounceValue(value, 300);
+  const debounced = useDebounceValue(value, DEBOUNCE_MS);
   const [status, setStatus] = useState<SignupAvailabilityStatus>('idle');
   const [lastCheckedEmail, setLastCheckedEmail] = useState('');
 
@@ -123,6 +123,16 @@ export function useSignupAvailability(
   // Tracks whether an immediate (blur) check is pending to suppress duplicate
   // debounced checks.
   const immediateCheckPendingRef = useRef(false);
+  // Latest input value — read by retry path so it never probes a stale value.
+  const valueRef = useRef(value);
+  // Retry timer handle — tracked for unmount cleanup.
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Immediate-flag reset timer handle — tracked for unmount cleanup.
+  const immediateFlagTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    valueRef.current = value;
+  }, [value]);
 
   // ---------------------------------------------------------------------------
   // Core async check (shared by debounced onChange and immediate triggerCheck)
@@ -185,13 +195,43 @@ export function useSignupAvailability(
           { error: err instanceof Error ? err.message : String(err) },
         );
 
+        // Terminal errors — App Check denial or rate-limit — never retry. Both
+        // are non-transient: another RTT will produce the same outcome (A-5-03).
+        //
+        // 2026-05-11 (Onyx-M2 / F28): `functions/resource-exhausted` is the
+        // BE rate-limit signal (HttpsError code = gRPC 8). Retrying after
+        // 1000ms simply doubles the request rate at the moment the user is
+        // being throttled — a trivial own-backend DoS amplification.
+        // Classify it as terminal and abort the retry.
+        const errCode =
+          err !== null && typeof err === 'object' && 'code' in err
+            ? (err as { code?: unknown }).code
+            : undefined;
+        const isTerminal =
+          err instanceof AppCheckError ||
+          errCode === 'functions/permission-denied' ||
+          errCode === 'functions/resource-exhausted';
+        if (isTerminal) {
+          attemptRef.current = 0;
+          setStatus('idle');
+          return;
+        }
+
         // One-shot retry: schedule a second attempt after RETRY_DELAY_MS.
         if (attemptRef.current === 0) {
           attemptRef.current = 1;
-          setTimeout(() => {
-            // Only retry if the value hasn't changed in the meantime.
+          // Snapshot the current value so we can detect input changes during
+          // the retry delay. If the user typed something else in the meantime,
+          // we must not commit a result against a stale input (A-5-01).
+          const retryValueSnapshot = valueRef.current;
+          retryTimerRef.current = setTimeout(() => {
+            retryTimerRef.current = null;
+            if (valueRef.current !== retryValueSnapshot) {
+              attemptRef.current = 0;
+              return;
+            }
             const retryToken = ++requestTokenRef.current;
-            void runCheck(raw, retryToken);
+            void runCheck(valueRef.current, retryToken);
           }, RETRY_DELAY_MS);
         } else {
           // Second failure — silent idle (never surface 'error').
@@ -228,12 +268,31 @@ export function useSignupAvailability(
 
     // Clear the flag after a brief moment so the next debounced event
     // (from a subsequent onChange) is not incorrectly suppressed.
-    setTimeout(() => {
+    if (immediateFlagTimerRef.current) {
+      clearTimeout(immediateFlagTimerRef.current);
+    }
+    immediateFlagTimerRef.current = setTimeout(() => {
       immediateCheckPendingRef.current = false;
-    }, 350);
+      immediateFlagTimerRef.current = null;
+    }, IMMEDIATE_FLAG_RESET_MS);
 
     void runCheck(value, myToken);
   }, [value, runCheck]);
+
+  // Unmount cleanup — clear in-flight timers to prevent state writes on an
+  // unmounted component (A-5-02).
+  useEffect(() => {
+    return () => {
+      if (retryTimerRef.current) {
+        clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
+      if (immediateFlagTimerRef.current) {
+        clearTimeout(immediateFlagTimerRef.current);
+        immediateFlagTimerRef.current = null;
+      }
+    };
+  }, []);
 
   return { status, lastCheckedEmail, triggerCheck };
 }

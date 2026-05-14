@@ -142,14 +142,19 @@ export function useSpas(filters?: SpaFilters) {
           });
         }
 
-        // Add ordering
-        const sortField =
-          filters?.sortBy === 'rating' ? 'rating.overall' : (filters?.sortBy ?? 'createdAt');
-        constraints.push({
-          type: 'orderBy',
-          field: sortField,
-          direction: filters?.sortDirection ?? 'desc',
-        });
+        // Add ordering only when caller asks for it. The legacy default of
+        // `createdAt desc` forces a composite index `(filter ASC, createdAt
+        // DESC)` for every where-clause variant. For `useActiveSpa` (single
+        // result, ordering irrelevant) the orderBy was the silent failure
+        // mode that left every customer with no active spa resolved.
+        if (filters?.sortBy) {
+          const sortField = filters.sortBy === 'rating' ? 'rating.overall' : filters.sortBy;
+          constraints.push({
+            type: 'orderBy',
+            field: sortField,
+            direction: filters.sortDirection ?? 'desc',
+          });
+        }
 
         // Add limit
         if (filters?.limit) {
@@ -159,19 +164,141 @@ export function useSpas(filters?: SpaFilters) {
           });
         }
 
+        // Temporary diagnostic 2026-05-13: surface raw SDK behavior in logcat
+        // so we can tell empty-result from silent-error from queue-stall.
+        // eslint-disable-next-line no-console
+        console.warn('useSpas.query.start', JSON.stringify({ filters, constraints }));
         const result = await firebaseClientWrapper.getDocuments<Spa>('spas', constraints);
+        // eslint-disable-next-line no-console
+        console.warn(
+          'useSpas.query.ok',
+          JSON.stringify({ count: result.documents.length, firstId: result.documents[0]?.id }),
+        );
 
         return result.documents.map((doc) => ({
           id: doc.id,
           ...doc.data,
         }));
       } catch (error) {
+        // eslint-disable-next-line no-console
+        console.warn('useSpas.query.error', String(error instanceof Error ? error.message : error));
         hooksLogger.error('Failed to fetch spas', error, { filters });
         throw parseError(error);
       }
     },
     staleTime: 5 * 60 * 1000, // 5 minutes - spas data is relatively static
   });
+}
+
+/**
+ * Resolve the single active spa for this app (Glamornate is a single-salon
+ * app — there is exactly one active spa). Used by the customer booking flow
+ * so the wizard auto-stamps `spaId` without ever showing a picker.
+ *
+ * Implementation: reuses `useSpas({ status: 'active', limit: 1 })` and
+ * returns the first match, or `null` while loading / on error. Cached for
+ * 5 minutes in TanStack Query.
+ *
+ * 2026-05-13: introduced to remove every hardcoded spa-id literal from
+ * customer-facing code. The Firestore `(default).spas` collection holds the
+ * sole active spa; recovery from accidental deletion = reseed (see
+ * `backend/scripts/seed-glamornate-spa.mjs`).
+ */
+/**
+ * Resolve the single active spa via a direct Firestore REST call.
+ *
+ * 2026-05-13 (rev 3): the JS-SDK path (`useSpas`) silently returned empty on
+ * Capacitor builds — App Check token retrieval failed repeatedly, the SDK
+ * dropped reads on the floor, and the booking wizard saw `activeSpa === null`
+ * and refused to submit. Reads are now public (firestore.rules) so a plain
+ * `fetch()` with the public API key works without auth or App Check.
+ *
+ * The REST endpoint runs the same `where status==active, limit 1` query the
+ * SDK would, but it's a single HTTP request we can debug with `curl` and
+ * doesn't go through the SDK's App-Check / queueing layers.
+ */
+export function useActiveSpa() {
+  return useQuery({
+    queryKey: ['activeSpa', 'rest'],
+    queryFn: async (): Promise<SpaWithId | null> => {
+      const apiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY;
+      const projectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
+      if (!apiKey || !projectId) {
+        spasLogger.warn('useActiveSpa.misconfigured', {
+          hasApiKey: !!apiKey,
+          hasProjectId: !!projectId,
+        });
+        return null;
+      }
+      const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents:runQuery?key=${apiKey}`;
+      const body = {
+        structuredQuery: {
+          from: [{ collectionId: 'spas' }],
+          where: {
+            fieldFilter: {
+              field: { fieldPath: 'status' },
+              op: 'EQUAL',
+              value: { stringValue: 'active' },
+            },
+          },
+          limit: 1,
+        },
+      };
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        spasLogger.error('useActiveSpa.rest.failed', new Error(text), { status: res.status });
+        return null;
+      }
+      const json = (await res.json()) as Array<{
+        document?: { name: string; fields: Record<string, unknown> };
+      }>;
+      const entry = json.find((e) => e.document);
+      if (!entry?.document) return null;
+      const id = entry.document.name.split('/').pop() ?? '';
+      const data = decodeFirestoreFields(entry.document.fields) as Partial<SpaWithId>;
+      return { ...data, id } as SpaWithId;
+    },
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
+/**
+ * Minimal decoder for Firestore REST `document.fields` shape. Walks the
+ * tagged-union value objects (`stringValue`, `integerValue`, `mapValue`,
+ * `arrayValue`, …) and returns the corresponding JS values. Only handles
+ * the field types `useActiveSpa` actually consumes.
+ */
+function decodeFirestoreFields(fields: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, raw] of Object.entries(fields)) {
+    out[key] = decodeFirestoreValue(raw);
+  }
+  return out;
+}
+
+function decodeFirestoreValue(raw: unknown): unknown {
+  if (raw == null || typeof raw !== 'object') return raw;
+  const v = raw as Record<string, unknown>;
+  if ('stringValue' in v) return v.stringValue;
+  if ('booleanValue' in v) return v.booleanValue;
+  if ('integerValue' in v) return Number(v.integerValue);
+  if ('doubleValue' in v) return v.doubleValue;
+  if ('timestampValue' in v) return v.timestampValue;
+  if ('nullValue' in v) return null;
+  if ('arrayValue' in v) {
+    const arr = (v.arrayValue as { values?: unknown[] })?.values ?? [];
+    return arr.map(decodeFirestoreValue);
+  }
+  if ('mapValue' in v) {
+    const map = (v.mapValue as { fields?: Record<string, unknown> })?.fields ?? {};
+    return decodeFirestoreFields(map);
+  }
+  return raw;
 }
 
 /**

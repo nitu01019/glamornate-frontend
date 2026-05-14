@@ -86,7 +86,7 @@ function SignInWithPhoneFormImpl({ disabled = false }: SignInWithPhoneFormProps)
       const code = (err as { code?: string } | null)?.code;
       if (code === 'auth/account-exists-with-different-credential') {
         if (typeof window !== 'undefined') {
-          window.location.assign('/customer/account/link?reason=cross_provider');
+          window.location.assign('/customer/account/link');
         }
       }
       const msg = err instanceof Error ? err.message : 'Invalid OTP. Please try again.';

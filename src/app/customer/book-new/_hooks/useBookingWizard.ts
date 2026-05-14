@@ -20,7 +20,7 @@
  * (e.g. step 5 with no spa).
  */
 import { useReducer, useCallback } from 'react';
-import type { BookingCustomerLocation } from '@/lib/contracts';
+import type { BookingCustomerLocation } from '@/shared/contracts';
 import type { SpaWithId } from '@/hooks/useSpas';
 import type { TherapistWithId } from '@/hooks/useTherapists';
 
@@ -29,7 +29,18 @@ export interface ServiceSelection {
   quantity: number;
 }
 
-export type WizardStep = 1 | 2 | 3 | 4 | 5;
+/**
+ * 2026-05-13 (revision 2): wizard collapsed further to 3 steps after the user
+ * clarified that services are already chosen in cart before the wizard mounts.
+ * Cart → "Proceed to Book" → wizard hydrates `selectedServices` from the cart
+ * store and lands directly on step 1.
+ *   1 = Home or Salon (BookingLocationStep)
+ *   2 = Pick Date + Time (ScheduleStep)
+ *   3 = Confirm (ConfirmStep)
+ * `selectedSpa` is auto-resolved via `useActiveSpa()`; `selectedServices` is
+ * hydrated from `useCartStore` items on mount.
+ */
+export type WizardStep = 1 | 2 | 3;
 
 export type BookingLocationKind = 'spa' | 'home';
 
@@ -71,7 +82,7 @@ type WizardAction =
 
 function clampStep(n: number): WizardStep {
   if (n < 1) return 1;
-  if (n > 5) return 5;
+  if (n > 3) return 3;
   return n as WizardStep;
 }
 
@@ -160,32 +171,18 @@ export function useBookingWizard(): UseBookingWizardResult {
 
   const actions: BookingWizardActions = {
     setSpa: useCallback((spa) => dispatch({ type: 'SET_SPA', spa }), []),
-    setServices: useCallback(
-      (services) => dispatch({ type: 'SET_SERVICES', services }),
-      [],
-    ),
-    toggleService: useCallback(
-      (serviceId) => dispatch({ type: 'TOGGLE_SERVICE', serviceId }),
-      [],
-    ),
+    setServices: useCallback((services) => dispatch({ type: 'SET_SERVICES', services }), []),
+    toggleService: useCallback((serviceId) => dispatch({ type: 'TOGGLE_SERVICE', serviceId }), []),
     updateServiceQuantity: useCallback(
-      (serviceId, delta) =>
-        dispatch({ type: 'UPDATE_SERVICE_QUANTITY', serviceId, delta }),
+      (serviceId, delta) => dispatch({ type: 'UPDATE_SERVICE_QUANTITY', serviceId, delta }),
       [],
     ),
-    setTherapist: useCallback(
-      (therapist) => dispatch({ type: 'SET_THERAPIST', therapist }),
-      [],
-    ),
+    setTherapist: useCallback((therapist) => dispatch({ type: 'SET_THERAPIST', therapist }), []),
     setDate: useCallback((date) => dispatch({ type: 'SET_DATE', date }), []),
     setTime: useCallback((time) => dispatch({ type: 'SET_TIME', time }), []),
-    setLocationKind: useCallback(
-      (kind) => dispatch({ type: 'SET_LOCATION_KIND', kind }),
-      [],
-    ),
+    setLocationKind: useCallback((kind) => dispatch({ type: 'SET_LOCATION_KIND', kind }), []),
     setCustomerLocation: useCallback(
-      (location) =>
-        dispatch({ type: 'SET_CUSTOMER_LOCATION', location }),
+      (location) => dispatch({ type: 'SET_CUSTOMER_LOCATION', location }),
       [],
     ),
     nextStep: useCallback(() => dispatch({ type: 'NEXT_STEP' }), []),
@@ -194,13 +191,16 @@ export function useBookingWizard(): UseBookingWizardResult {
 
   const reset = useCallback(() => dispatch({ type: 'RESET' }), []);
 
+  // 3-step flow (post 2026-05-13 r2 cart-driven refactor):
+  //   1 location decided · 2 date+time picked · 3 confirm
+  // `selectedSpa` is auto-resolved via `useActiveSpa()` in the presenter.
+  // `selectedServices` is hydrated from `useCartStore` on mount; the wizard
+  // redirects to `/services` if neither cart nor state has any services.
   let canProceed = false;
-  if (state.step === 1) canProceed = !!state.selectedSpa;
-  else if (state.step === 2) canProceed = state.selectedServices.length > 0;
-  else if (state.step === 3) canProceed = !!state.selectedDate && !!state.selectedTime;
-  else if (state.step === 4)
+  if (state.step === 1)
     canProceed = state.bookingLocationKind === 'spa' || state.customerLocation !== null;
-  else if (state.step === 5) canProceed = true;
+  else if (state.step === 2) canProceed = !!state.selectedDate && !!state.selectedTime;
+  else if (state.step === 3) canProceed = true;
 
   return { state, actions, reset, canProceed };
 }

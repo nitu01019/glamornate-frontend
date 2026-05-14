@@ -33,6 +33,28 @@ vi.mock('firebase/auth', () => ({
   EmailAuthProvider: {
     credential: (...args: unknown[]) => emailAuthCredentialMock(...(args as [string, string])),
   },
+  // Stubs to satisfy transitive imports from `@/lib/firebase-client` —
+  // added 2026-05-11 when ChangePasswordSheet started importing
+  // getFirebaseApp (for the revokeMySessions callable wire-up, T3-F5).
+  getAuth: vi.fn(),
+  setPersistence: vi.fn(),
+  indexedDBLocalPersistence: {},
+  browserLocalPersistence: {},
+  inMemoryPersistence: {},
+}));
+
+// 2026-05-11 (T3-F5): mock the revokeMySessions callable + firebase-client
+// so the component's password-change flow can call it without booting the
+// real Firebase app in tests.
+const revokeMySessionsMock = vi.fn().mockResolvedValue({ data: { success: true } });
+vi.mock('firebase/functions', () => ({
+  getFunctions: vi.fn(() => ({})),
+  httpsCallable: vi.fn(() => revokeMySessionsMock),
+}));
+vi.mock('@/lib/firebase-client', () => ({
+  getFirebaseApp: vi.fn(() => ({})),
+  getFirebaseAuth: vi.fn(() => ({})),
+  getFirebaseFirestore: vi.fn(() => ({})),
 }));
 
 // ---------------------------------------------------------------------------

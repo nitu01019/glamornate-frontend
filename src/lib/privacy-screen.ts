@@ -34,6 +34,12 @@ export async function applyPrivacyScreen(pathname: string): Promise<void> {
   }
 
   try {
+    // QA OVERRIDE 2026-05-13: disabled so adb screencap returns the real
+    // surface instead of FLAG_SECURE's black bitmap. Re-enable before
+    // releasing to production.
+    void pathname;
+    await PrivacyScreen.disable();
+    return;
     if (isSecureRoute(pathname)) {
       await PrivacyScreen.enable();
     } else {

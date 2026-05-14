@@ -30,13 +30,9 @@ export function BookingBottomBar({
   // `aria-disabled` for screen-reader redundancy. Touch target = h-14 (56px) ≥
   // 44px. Color contrast on disabled (gray-200 / gray-400) tracked separately
   // — brand-maroon palette unchanged per scope.
-  const accessibleLabel = isFinalStep
-    ? isCreating
-      ? 'Confirming…'
-      : 'Confirm'
-    : 'Continue';
+  const accessibleLabel = isFinalStep ? (isCreating ? 'Confirming…' : 'Confirm') : 'Continue';
   return (
-    <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-100 px-5 py-4 safe-area-inset-bottom">
+    <div className="fixed bottom-0 left-0 right-0 z-30 bg-white border-t border-gray-100 px-5 pt-4 pb-4 safe-area-bottom">
       <div className="flex items-center justify-between gap-4">
         {selectedServices.length > 0 && (
           <div>

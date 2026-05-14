@@ -72,27 +72,13 @@ vi.mock('@/lib/location-provider', () => ({
 }));
 
 // ---------------------------------------------------------------------------
-// Location-writer mock
-// ---------------------------------------------------------------------------
-
-const setActiveLocation = vi.fn().mockResolvedValue(undefined);
-
-class LocationWriteError extends Error {
-  readonly code: string;
-  constructor(code: string, message: string) {
-    super(message);
-    this.code = code;
-  }
-}
-
-vi.mock('@/lib/location-writer', () => ({
-  setActiveLocation,
-  LocationWriteError,
-}));
-
-// ---------------------------------------------------------------------------
 // use-addresses mock
 // ---------------------------------------------------------------------------
+//
+// v3 (2026-05-13 — location unification): the form no longer uses the
+// legacy `setActiveLocation('saved-address')` writer. It now promotes the
+// new address to default via `setDefaultAddress.mutateAsync` and mirrors
+// to the in-memory `LocationProvider` via the `setLocation` mock above.
 
 interface AddMutationMock {
   mutateAsync: (payload: AddAddressInput) => Promise<AddAddressResponse>;
@@ -107,6 +93,8 @@ let addAddressMutation: AddMutationMock = {
   isPending: false,
 };
 
+const setDefaultAddressMock = vi.fn().mockResolvedValue({ addressId: 'addr-new' });
+
 vi.mock('@/lib/addresses/use-addresses', () => ({
   useAddresses: () => ({
     addresses: [],
@@ -115,7 +103,7 @@ vi.mock('@/lib/addresses/use-addresses', () => ({
     addAddress: addAddressMutation,
     updateAddress: { mutateAsync: vi.fn(), isPending: false },
     deleteAddress: { mutateAsync: vi.fn(), isPending: false },
-    setDefaultAddress: { mutateAsync: vi.fn(), isPending: false },
+    setDefaultAddress: { mutateAsync: setDefaultAddressMock, isPending: false },
     migrationState: 'done',
     list: { data: [], isLoading: false, error: null },
   }),
@@ -135,7 +123,7 @@ function resetAll(): void {
   toastCalls.warning.mockReset();
   toastCalls.info.mockReset();
   setLocation.mockReset();
-  setActiveLocation.mockReset().mockResolvedValue(undefined);
+  setDefaultAddressMock.mockReset().mockResolvedValue({ addressId: 'addr-new' });
   addAddressMutation = {
     mutateAsync: vi.fn().mockResolvedValue({
       addressId: 'addr-new',
@@ -207,7 +195,7 @@ describe('AddressSheetManualForm', () => {
     expect(screen.getByTestId('address-form-cancel')).toBeInTheDocument();
   });
 
-  it('submits valid form → addAddress → setActiveLocation → onSaved + onClose', async () => {
+  it('submits valid form → addAddress → setDefaultAddress + setLocation → onSaved + onClose', async () => {
     const Form = await loadForm();
     const onClose = vi.fn();
     const onSaved = vi.fn();
@@ -241,12 +229,16 @@ describe('AddressSheetManualForm', () => {
       isDefault: true,
     });
 
+    // v3: post-save the form promotes via the modern callable + syncs the
+    // in-memory provider. No more legacy `setActiveLocation` writer.
     await waitFor(() => {
-      expect(setActiveLocation).toHaveBeenCalledTimes(1);
+      expect(setDefaultAddressMock).toHaveBeenCalledTimes(1);
     });
-    const [input, opts] = setActiveLocation.mock.calls[0];
-    expect(input).toEqual({ kind: 'saved-address', addressId: 'addr-new' });
-    expect(opts.provider.setLocation).toBe(setLocation);
+    expect(setDefaultAddressMock.mock.calls[0][0]).toEqual({ addressId: 'addr-new' });
+    expect(setLocation).toHaveBeenCalled();
+    const provided = setLocation.mock.calls[0][0];
+    expect(provided.city).toBe('Bengaluru');
+    expect(provided.fullAddress).toContain('Bengaluru');
 
     expect(onSaved).toHaveBeenCalledWith('addr-new');
     expect(onClose).toHaveBeenCalled();

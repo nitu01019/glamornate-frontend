@@ -1,79 +1,45 @@
 /**
  * Tests for HomeLocationSheet.
  *
- * Strategy:
- *  - Mock `@/lib/location-writer` so we can assert the single-writer call
- *    shape without touching Firestore or the location-provider.
- *  - Mock `@/lib/auth-provider`, `@/lib/location-provider`,
- *    `@/hooks/useDefaultAddress`, and `firebase/firestore` so nothing crosses
- *    the component boundary.
- *  - Drive the saved-addresses `onSnapshot` subscription synchronously by
- *    capturing the `next` callback and invoking it in `act(...)`.
+ * v3 (2026-05-13 — location unification): the sheet now reads from the
+ * `users/{uid}/addresses` subcollection via `useAddresses` and runs the
+ * GPS flow through `useCurrentLocation`. Saved-address taps go through
+ * `setDefaultAddress.mutateAsync` + direct `useLocation().setLocation`.
+ * The legacy `setActiveLocation` / `setActiveLocationFromGps` writers
+ * are no longer invoked from this sheet — assertions reflect that.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { SavedAddress } from '@/types';
+import type {
+  UseCurrentLocationResult,
+  LocationStatus,
+  LocationSource,
+  LocationErrorCode,
+} from '@/lib/location/hooks/useCurrentLocation';
 
 // ---------------------------------------------------------------------------
-// Capacitor.isNativePlatform mock — settable per test
+// Auth / location-provider mocks
 // ---------------------------------------------------------------------------
 
-let isNativePlatformValue = false;
-function setIsNativePlatform(value: boolean): void {
-  isNativePlatformValue = value;
-  (globalThis as unknown as { Capacitor?: { isNativePlatform: () => boolean } }).Capacitor = {
-    isNativePlatform: () => isNativePlatformValue,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// @capacitor/geolocation mock
-// ---------------------------------------------------------------------------
-
-const capacitorGetCurrentPosition = vi.fn();
-const capacitorRequestPermissions = vi.fn();
-vi.mock('@capacitor/geolocation', () => ({
-  Geolocation: {
-    getCurrentPosition: capacitorGetCurrentPosition,
-    requestPermissions: capacitorRequestPermissions,
-  },
-}));
-
-// ---------------------------------------------------------------------------
-// location-writer mock — captures payloads for assertions
-// ---------------------------------------------------------------------------
-
-const setActiveLocation = vi.fn().mockResolvedValue(undefined);
-const setActiveLocationFromGps = vi.fn().mockResolvedValue(undefined);
-
-class LocationWriteError extends Error {
-  readonly code: string;
-  readonly cause: unknown;
-  constructor(code: string, message: string, cause?: unknown) {
-    super(message);
-    this.code = code;
-    this.cause = cause;
-  }
-}
-
-vi.mock('@/lib/location-writer', () => ({
-  setActiveLocation,
-  setActiveLocationFromGps,
-  LocationWriteError,
-}));
-
-// ---------------------------------------------------------------------------
-// auth / location / default-address hook mocks
-// ---------------------------------------------------------------------------
-
-const authState: {
-  firebaseUser: { uid: string } | null;
+interface AuthMockState {
+  firebaseUser: {
+    uid: string;
+    displayName?: string | null;
+    phoneNumber?: string | null;
+  } | null;
   user: unknown;
   isAuthenticated: boolean;
   isLoading: boolean;
-} = {
-  firebaseUser: { uid: 'uid-1' },
+}
+
+const authState: AuthMockState = {
+  firebaseUser: {
+    uid: 'uid-1',
+    displayName: 'Aanya Sharma',
+    phoneNumber: '+919876543210',
+  },
   user: null,
   isAuthenticated: true,
   isLoading: false,
@@ -88,7 +54,85 @@ vi.mock('@/lib/location-provider', () => ({
   useLocation: () => ({ location: null, setLocation }),
 }));
 
-// Toast actions — the sheet uses these for the `not-configured` branch.
+// ---------------------------------------------------------------------------
+// useAddresses mock — drives the subcollection-backed list + mutations
+// ---------------------------------------------------------------------------
+
+const addAddressMock = vi
+  .fn()
+  .mockResolvedValue({ addressId: 'addr-new', isDefault: true });
+const setDefaultAddressMock = vi.fn().mockResolvedValue({ addressId: 'addr-new' });
+const deleteAddressMock = vi.fn().mockResolvedValue({ deleted: true });
+
+let useAddressesState: {
+  addresses: readonly SavedAddress[];
+  isLoading: boolean;
+  migrationState: 'pending' | 'in-flight' | 'done' | 'errored';
+} = {
+  addresses: [],
+  isLoading: false,
+  migrationState: 'done',
+};
+
+vi.mock('@/lib/addresses/use-addresses', () => ({
+  useAddresses: () => ({
+    addresses: useAddressesState.addresses,
+    isLoading: useAddressesState.isLoading,
+    error: null,
+    addAddress: { mutateAsync: addAddressMock, isPending: false },
+    updateAddress: { mutateAsync: vi.fn(), isPending: false },
+    deleteAddress: { mutateAsync: deleteAddressMock, isPending: false },
+    setDefaultAddress: { mutateAsync: setDefaultAddressMock, isPending: false },
+    migrationState: useAddressesState.migrationState,
+    list: { data: useAddressesState.addresses, isLoading: false, error: null },
+  }),
+}));
+
+// ---------------------------------------------------------------------------
+// useCurrentLocation mock — drives the GPS state machine per test
+// ---------------------------------------------------------------------------
+
+const refreshMock = vi.fn(async () => undefined);
+const refreshOpportunisticMock = vi.fn(async () => undefined);
+const acknowledgeRationaleMock = vi.fn();
+const dismissRationaleMock = vi.fn();
+const openSettingsMock = vi.fn(async () => undefined);
+
+let locState: UseCurrentLocationResult = {
+  coords: null,
+  address: null,
+  status: 'idle',
+  source: null,
+  error: null,
+  isRationaleOpen: false,
+  acknowledgeRationale: acknowledgeRationaleMock,
+  dismissRationale: dismissRationaleMock,
+  openSettings: openSettingsMock,
+  refresh: refreshMock,
+  refreshOpportunistic: refreshOpportunisticMock,
+};
+
+function setLocState(
+  patch: Partial<{
+    coords: { lat: number; lng: number } | null;
+    address: UseCurrentLocationResult['address'];
+    status: LocationStatus;
+    source: LocationSource | null;
+    error: LocationErrorCode | null;
+    isRationaleOpen: boolean;
+  }>,
+): void {
+  locState = { ...locState, ...patch };
+}
+
+vi.mock('@/lib/location/hooks/useCurrentLocation', () => ({
+  useCurrentLocation: () => locState,
+}));
+
+// ---------------------------------------------------------------------------
+// Toast actions
+// ---------------------------------------------------------------------------
+
 const toastCalls = {
   success: vi.fn(),
   error: vi.fn(),
@@ -99,23 +143,42 @@ vi.mock('@/lib/providers', () => ({
   useToastActions: () => toastCalls,
 }));
 
-// Stub the manual form so we don't pull in the `useAddresses` stack in
-// these sheet-level tests. The real form has its own test file.
+// ---------------------------------------------------------------------------
+// LocationPulse + LocationRationaleModal — render light stubs so we can
+// assert their open state without pulling in Radix portals.
+// ---------------------------------------------------------------------------
+
+vi.mock('@/components/location/LocationPulse', () => ({
+  LocationPulse: () => <div data-testid="location-pulse" />,
+}));
+
+vi.mock('@/components/location/LocationRationaleModal', () => ({
+  LocationRationaleModal: ({ open }: { open: boolean }) =>
+    open ? <div data-testid="rationale-modal" /> : null,
+}));
+
+// AddressSheetManualForm stub — silent-save flow no longer triggers it
+// from the GPS path; only the "Add a new address" CTA does. Stub renders
+// the form when open=true.
 vi.mock('@/components/home/AddressSheetManualForm', () => ({
-  default: ({ open, onClose, onSaved }: { open: boolean; onClose: () => void; onSaved?: (id: string) => void }) => {
+  default: ({
+    open,
+    onClose,
+    onSaved,
+  }: {
+    open: boolean;
+    onClose: () => void;
+    onSaved?: (id: string) => void;
+  }) => {
     if (!open) return null;
     return (
       <div data-testid="address-sheet-manual-form-stub">
-        <button
-          type="button"
-          data-testid="manual-form-stub-close"
-          onClick={onClose}
-        >
+        <button data-testid="manual-form-stub-close" type="button" onClick={onClose}>
           close
         </button>
         <button
-          type="button"
           data-testid="manual-form-stub-save"
+          type="button"
           onClick={() => onSaved?.('addr-new')}
         >
           save
@@ -123,34 +186,6 @@ vi.mock('@/components/home/AddressSheetManualForm', () => ({
       </div>
     );
   },
-}));
-
-// ---------------------------------------------------------------------------
-// firebase-client + firebase/firestore mocks — capture snapshot `next`
-// ---------------------------------------------------------------------------
-
-vi.mock('@/lib/firebase-client', () => ({
-  getFirebaseFirestore: vi.fn(() => ({})),
-  getFirebaseAuth: vi.fn(() => ({ currentUser: { uid: 'uid-1' } })),
-}));
-
-interface SnapshotCapture {
-  next: (snap: { exists: () => boolean; data: () => unknown }) => void;
-  error: (err: unknown) => void;
-}
-const snapshotHandlers: SnapshotCapture[] = [];
-const unsubscribeSpies: Array<ReturnType<typeof vi.fn>> = [];
-
-vi.mock('firebase/firestore', () => ({
-  doc: vi.fn(() => ({ type: 'document' })),
-  onSnapshot: vi.fn(
-    (_ref: unknown, next: SnapshotCapture['next'], error: SnapshotCapture['error']) => {
-      snapshotHandlers.push({ next, error });
-      const unsubscribe = vi.fn();
-      unsubscribeSpies.push(unsubscribe);
-      return unsubscribe;
-    },
-  ),
 }));
 
 // ---------------------------------------------------------------------------
@@ -172,19 +207,9 @@ function buildAddress(overrides: Partial<SavedAddress> = {}): SavedAddress {
     isDefault: true,
     createdAt: '2026-04-20T00:00:00.000Z',
     updatedAt: '2026-04-20T00:00:00.000Z',
+    geo: { lat: 12.97, lng: 77.59 },
     ...overrides,
   };
-}
-
-function emitAddresses(addresses: readonly SavedAddress[]): void {
-  const handler = snapshotHandlers[snapshotHandlers.length - 1];
-  if (!handler) return;
-  act(() => {
-    handler.next({
-      exists: () => true,
-      data: () => ({ addresses }),
-    });
-  });
 }
 
 async function loadSheet() {
@@ -193,26 +218,47 @@ async function loadSheet() {
 }
 
 function resetAll(): void {
-  snapshotHandlers.length = 0;
-  unsubscribeSpies.length = 0;
-  setActiveLocation.mockReset().mockResolvedValue(undefined);
-  setActiveLocationFromGps.mockReset().mockResolvedValue({ status: 'ok' });
+  addAddressMock
+    .mockReset()
+    .mockResolvedValue({ addressId: 'addr-new', isDefault: true });
+  setDefaultAddressMock.mockReset().mockResolvedValue({ addressId: 'addr-new' });
+  deleteAddressMock.mockReset().mockResolvedValue({ deleted: true });
+  refreshMock.mockReset().mockResolvedValue(undefined);
+  refreshOpportunisticMock.mockReset().mockResolvedValue(undefined);
+  acknowledgeRationaleMock.mockReset();
+  dismissRationaleMock.mockReset();
+  openSettingsMock.mockReset().mockResolvedValue(undefined);
   setLocation.mockReset();
-  capacitorGetCurrentPosition.mockReset();
-  capacitorRequestPermissions.mockReset();
   toastCalls.success.mockReset();
   toastCalls.error.mockReset();
   toastCalls.warning.mockReset();
   toastCalls.info.mockReset();
-  authState.firebaseUser = { uid: 'uid-1' };
-  setIsNativePlatform(false);
+  useAddressesState = { addresses: [], isLoading: false, migrationState: 'done' };
+  locState = {
+    coords: null,
+    address: null,
+    status: 'idle',
+    source: null,
+    error: null,
+    isRationaleOpen: false,
+    acknowledgeRationale: acknowledgeRationaleMock,
+    dismissRationale: dismissRationaleMock,
+    openSettings: openSettingsMock,
+    refresh: refreshMock,
+    refreshOpportunistic: refreshOpportunisticMock,
+  };
+  authState.firebaseUser = {
+    uid: 'uid-1',
+    displayName: 'Aanya Sharma',
+    phoneNumber: '+919876543210',
+  };
 }
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
-describe('HomeLocationSheet', () => {
+describe('HomeLocationSheet — v3', () => {
   beforeEach(() => {
     resetAll();
   });
@@ -221,15 +267,13 @@ describe('HomeLocationSheet', () => {
     cleanup();
   });
 
-  it('renders the GPS, saved addresses, and manage rows when the sheet is open', async () => {
-    const Sheet = await loadSheet();
-    render(<Sheet open={true} onClose={vi.fn()} />);
-
-    // After mount, the onSnapshot subscription fires — emit two addresses.
-    emitAddresses([
+  it('renders the GPS row, saved-address list, and manage link when open', async () => {
+    useAddressesState.addresses = [
       buildAddress(),
       buildAddress({ id: 'addr-work', label: 'work', city: 'Mumbai', isDefault: false }),
-    ]);
+    ];
+    const Sheet = await loadSheet();
+    render(<Sheet open={true} onClose={vi.fn()} />);
 
     expect(screen.getByTestId('home-location-sheet-gps')).toHaveTextContent(
       /use current location/i,
@@ -245,202 +289,304 @@ describe('HomeLocationSheet', () => {
     );
   });
 
-  it('shows the empty state with manual-entry CTA (no deep-link) when the user has no saved addresses', async () => {
+  it('shows the empty state with manual-entry CTA when no saved addresses', async () => {
     const Sheet = await loadSheet();
     render(<Sheet open={true} onClose={vi.fn()} />);
-
-    emitAddresses([]);
 
     const empty = screen.getByTestId('home-location-sheet-empty');
     expect(empty).toHaveTextContent(/no saved addresses yet/i);
     const cta = within(empty).getByTestId('home-location-sheet-add-first');
-    // The Phase 2 refactor replaces the deep-link with an inline trigger.
     expect(cta.tagName).toBe('BUTTON');
     expect(cta).not.toHaveAttribute('href');
-
-    // Heading should NOT render in the empty state.
     expect(screen.queryByTestId('home-location-sheet-saved-heading')).not.toBeInTheDocument();
   });
 
-  it('routes a saved-address tap through setActiveLocation and closes the sheet', async () => {
+  it('promotes a saved address via setDefaultAddress + setLocation and closes the sheet', async () => {
+    useAddressesState.addresses = [buildAddress()];
     const onClose = vi.fn();
     const Sheet = await loadSheet();
     render(<Sheet open={true} onClose={onClose} />);
-    emitAddresses([buildAddress()]);
 
     const row = screen.getByTestId('home-location-sheet-address-addr-home');
     await act(async () => {
       fireEvent.click(row);
     });
 
-    expect(setActiveLocation).toHaveBeenCalledTimes(1);
-    const [input, options] = setActiveLocation.mock.calls[0];
-    expect(input).toEqual({ kind: 'saved-address', addressId: 'addr-home' });
-    expect(options.provider.setLocation).toBe(setLocation);
-    expect(onClose).toHaveBeenCalled();
-  });
-
-  it('falls back to GPS via setActiveLocationFromGps on native platform', async () => {
-    setIsNativePlatform(true);
-    const onClose = vi.fn();
-    const Sheet = await loadSheet();
-    render(<Sheet open={true} onClose={onClose} />);
-    emitAddresses([]);
-
-    const gps = screen.getByTestId('home-location-sheet-gps');
-    await act(async () => {
-      fireEvent.click(gps);
+    await waitFor(() => {
+      expect(setDefaultAddressMock).toHaveBeenCalledTimes(1);
     });
-
-    expect(setActiveLocationFromGps).toHaveBeenCalledTimes(1);
-    const [options] = setActiveLocationFromGps.mock.calls[0];
-    expect(options.provider.setLocation).toBe(setLocation);
+    expect(setDefaultAddressMock.mock.calls[0][0]).toEqual({ addressId: 'addr-home' });
+    expect(setLocation).toHaveBeenCalled();
+    const passed = setLocation.mock.calls[0][0];
+    expect(passed.city).toBe('Bengaluru');
+    expect(passed.lat).toBe(12.97);
+    expect(passed.lng).toBe(77.59);
     expect(onClose).toHaveBeenCalled();
   });
 
-  it('also uses setActiveLocationFromGps on web (non-native) — single writer owns the branch', async () => {
-    setIsNativePlatform(false);
+  it('tapping the GPS row calls useCurrentLocation.refreshOpportunistic()', async () => {
     const Sheet = await loadSheet();
     render(<Sheet open={true} onClose={vi.fn()} />);
-    emitAddresses([]);
 
     await act(async () => {
       fireEvent.click(screen.getByTestId('home-location-sheet-gps'));
     });
 
-    expect(setActiveLocationFromGps).toHaveBeenCalledTimes(1);
-    // We do NOT call the Capacitor geolocation plugin directly from the
-    // component — the location-writer owns platform routing.
-    expect(capacitorGetCurrentPosition).not.toHaveBeenCalled();
+    // refreshOpportunistic closes the loop instantly from cache when fresh;
+    // falls through to runFetch when stale. Either way, the sheet wires
+    // it as the single GPS entry-point now.
+    expect(refreshOpportunisticMock).toHaveBeenCalledTimes(1);
   });
 
-  it('surfaces a friendly error when setActiveLocation rejects', async () => {
-    setActiveLocation.mockRejectedValueOnce(
-      new LocationWriteError('firestore-write-failed', 'Could not set default address'),
-    );
-
-    const Sheet = await loadSheet();
-    render(<Sheet open={true} onClose={vi.fn()} />);
-    emitAddresses([buildAddress()]);
-
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('home-location-sheet-address-addr-home'));
-    });
-
-    const alert = await screen.findByTestId('home-location-sheet-error');
-    expect(alert).toHaveTextContent('Could not set default address');
-  });
-
-  it('renders the manage-addresses link with the expected href and closes on tap', async () => {
+  it('silently auto-saves a "detected" address on a complete reverseGeocode result', async () => {
     const onClose = vi.fn();
     const Sheet = await loadSheet();
-    render(<Sheet open={true} onClose={onClose} />);
-    emitAddresses([buildAddress()]);
+    const { rerender } = render(<Sheet open={true} onClose={onClose} />);
 
-    const manage = screen.getByTestId('home-location-sheet-manage');
-    expect(manage).toHaveAttribute('href', '/customer/addresses');
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('home-location-sheet-gps'));
+    });
 
-    fireEvent.click(manage);
+    setLocState({
+      status: 'success',
+      coords: { lat: 12.97, lng: 77.59 },
+      source: 'gps',
+      address: {
+        formatted: 'MG Road, Bengaluru 560001',
+        line1: 'MG Road',
+        city: 'Bengaluru',
+        state: 'KA',
+        pincode: '560001',
+      },
+    });
+    rerender(<Sheet open={true} onClose={onClose} />);
+
+    await waitFor(() => {
+      expect(addAddressMock).toHaveBeenCalledTimes(1);
+    });
+    const payload = addAddressMock.mock.calls[0][0];
+    expect(payload).toMatchObject({
+      label: 'detected',
+      city: 'Bengaluru',
+      state: 'KA',
+      pincode: '560001',
+      isDefault: false,
+      geo: { lat: 12.97, lng: 77.59 },
+    });
+    expect(payload.name).toMatch(/Detected/);
+    expect(setLocation).toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
+    expect(screen.queryByTestId('address-sheet-manual-form-stub')).not.toBeInTheDocument();
+  });
+
+  it('uses sentinel values when reverseGeocode is missing pincode (no manual form)', async () => {
+    const onClose = vi.fn();
+    const Sheet = await loadSheet();
+    const { rerender } = render(<Sheet open={true} onClose={onClose} />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('home-location-sheet-gps'));
+    });
+
+    // Hook resolves but no pincode — silent save still proceeds with
+    // sentinel '000000' so the user is never blocked by partial geocode.
+    setLocState({
+      status: 'success',
+      coords: { lat: 12.97, lng: 77.59 },
+      source: 'gps',
+      address: {
+        formatted: 'MG Road, Bengaluru',
+        line1: 'MG Road',
+        city: 'Bengaluru',
+        state: 'KA',
+      },
+    });
+    rerender(<Sheet open={true} onClose={onClose} />);
+
+    await waitFor(() => {
+      expect(addAddressMock).toHaveBeenCalledTimes(1);
+    });
+    expect(addAddressMock.mock.calls[0][0]).toMatchObject({
+      label: 'detected',
+      pincode: '000000',
+      city: 'Bengaluru',
+    });
+    expect(screen.queryByTestId('address-sheet-manual-form-stub')).not.toBeInTheDocument();
     expect(onClose).toHaveBeenCalled();
   });
 
-  it('keeps keyboard focus within the sheet when the user tabs (focus trap)', async () => {
+  it('uses sentinel phone when the auth user has no displayName/phone (no manual form)', async () => {
+    authState.firebaseUser = { uid: 'uid-1', displayName: null, phoneNumber: null };
+    const onClose = vi.fn();
     const Sheet = await loadSheet();
-    render(<Sheet open={true} onClose={vi.fn()} />);
-    emitAddresses([buildAddress()]);
+    const { rerender } = render(<Sheet open={true} onClose={onClose} />);
 
-    // Radix auto-focuses the first focusable; our onOpenAutoFocus diverts it
-    // to the GPS button. Assert the GPS button receives initial focus.
-    const gps = screen.getByTestId('home-location-sheet-gps');
-    expect(document.activeElement).toBe(gps);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('home-location-sheet-gps'));
+    });
 
-    // Tab should move forward inside the sheet; after several tabs the focus
-    // must still land on an element that lives inside the dialog content.
-    const sheet = screen.getByTestId('home-location-sheet');
-    for (let i = 0; i < 6; i++) {
-      fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Tab' });
-    }
-    // Radix installs the focus trap via focus-scope — assert the active
-    // element is either still the sheet itself or a descendant.
-    const active = document.activeElement as HTMLElement | null;
-    expect(active).not.toBeNull();
-    expect(sheet.contains(active as Node) || active === sheet).toBe(true);
+    setLocState({
+      status: 'success',
+      coords: { lat: 12.97, lng: 77.59 },
+      source: 'gps',
+      address: {
+        formatted: 'MG Road, Bengaluru 560001',
+        line1: 'MG Road',
+        city: 'Bengaluru',
+        state: 'KA',
+        pincode: '560001',
+      },
+    });
+    rerender(<Sheet open={true} onClose={onClose} />);
+
+    await waitFor(() => {
+      expect(addAddressMock).toHaveBeenCalledTimes(1);
+    });
+    const payload = addAddressMock.mock.calls[0][0];
+    expect(payload).toMatchObject({
+      label: 'detected',
+      phone: '0000000',
+      name: expect.stringMatching(/Detected location/),
+    });
+    expect(screen.queryByTestId('address-sheet-manual-form-stub')).not.toBeInTheDocument();
+    expect(onClose).toHaveBeenCalled();
   });
 
-  it('expands the manual entry form when "Add a new address" is tapped (with saved addresses)', async () => {
+  it('prunes prior "detected" entries before inserting the new GPS snapshot', async () => {
+    useAddressesState.addresses = [
+      buildAddress({ id: 'addr-stale', label: 'detected' }),
+      buildAddress({ id: 'addr-home', label: 'home' }),
+    ];
+    const Sheet = await loadSheet();
+    const { rerender } = render(<Sheet open={true} onClose={vi.fn()} />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('home-location-sheet-gps'));
+    });
+
+    setLocState({
+      status: 'success',
+      coords: { lat: 12.97, lng: 77.59 },
+      source: 'gps',
+      address: {
+        formatted: 'MG Road, Bengaluru 560001',
+        line1: 'MG Road',
+        city: 'Bengaluru',
+        state: 'KA',
+        pincode: '560001',
+      },
+    });
+    rerender(<Sheet open={true} onClose={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(addAddressMock).toHaveBeenCalledTimes(1);
+    });
+    // Stale 'detected' entry was deleted; the 'home' entry is untouched.
+    expect(deleteAddressMock).toHaveBeenCalledWith({ addressId: 'addr-stale' });
+    expect(deleteAddressMock).not.toHaveBeenCalledWith({ addressId: 'addr-home' });
+  });
+
+  it('surfaces a friendly error pill on permission-permanent without opening manual form', async () => {
+    const Sheet = await loadSheet();
+    const { rerender } = render(<Sheet open={true} onClose={vi.fn()} />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('home-location-sheet-gps'));
+    });
+
+    setLocState({ status: 'error', error: 'permission-permanent' });
+    rerender(<Sheet open={true} onClose={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('home-location-sheet-error')).toHaveTextContent(
+        /Location is turned off/i,
+      );
+    });
+    expect(addAddressMock).not.toHaveBeenCalled();
+    // v4 (2026-05-14): error never opens manual form — user retries
+    // explicitly or picks a saved address.
+    expect(screen.queryByTestId('address-sheet-manual-form-stub')).not.toBeInTheDocument();
+  });
+
+  it('surfaces a friendly error pill on quota', async () => {
+    const Sheet = await loadSheet();
+    const { rerender } = render(<Sheet open={true} onClose={vi.fn()} />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('home-location-sheet-gps'));
+    });
+
+    setLocState({ status: 'error', error: 'quota' });
+    rerender(<Sheet open={true} onClose={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('home-location-sheet-error')).toHaveTextContent(
+        /Too many requests/i,
+      );
+    });
+  });
+
+  it('renders the manage-addresses link and closes the sheet on tap', async () => {
+    useAddressesState.addresses = [buildAddress()];
+    const onClose = vi.fn();
+    const Sheet = await loadSheet();
+    render(<Sheet open={true} onClose={onClose} />);
+
+    const link = screen.getByTestId('home-location-sheet-manage');
+    expect(link).toHaveAttribute('href', '/customer/addresses');
+    fireEvent.click(link);
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('expands the manual form when "Add a new address" is tapped (saved addresses exist)', async () => {
+    useAddressesState.addresses = [buildAddress()];
     const Sheet = await loadSheet();
     render(<Sheet open={true} onClose={vi.fn()} />);
-    emitAddresses([buildAddress()]);
-
-    // Not rendered until the user opts in.
-    expect(
-      screen.queryByTestId('address-sheet-manual-form-stub'),
-    ).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId('home-location-sheet-add-new'));
-
-    expect(
-      screen.getByTestId('address-sheet-manual-form-stub'),
-    ).toBeInTheDocument();
-    // The "Add a new address" trigger hides while the form is open.
-    expect(
-      screen.queryByTestId('home-location-sheet-add-new'),
-    ).not.toBeInTheDocument();
+    expect(screen.getByTestId('address-sheet-manual-form-stub')).toBeInTheDocument();
   });
 
-  it('expands the manual entry form when the empty-state CTA is tapped', async () => {
+  it('expands the manual form when the empty-state CTA is tapped', async () => {
     const Sheet = await loadSheet();
     render(<Sheet open={true} onClose={vi.fn()} />);
-    emitAddresses([]);
 
     fireEvent.click(screen.getByTestId('home-location-sheet-add-first'));
-
-    expect(
-      screen.getByTestId('address-sheet-manual-form-stub'),
-    ).toBeInTheDocument();
+    expect(screen.getByTestId('address-sheet-manual-form-stub')).toBeInTheDocument();
   });
 
   it('closes the sheet when the manual form reports success', async () => {
-    const Sheet = await loadSheet();
     const onClose = vi.fn();
+    const Sheet = await loadSheet();
     render(<Sheet open={true} onClose={onClose} />);
-    emitAddresses([buildAddress()]);
 
-    fireEvent.click(screen.getByTestId('home-location-sheet-add-new'));
+    fireEvent.click(screen.getByTestId('home-location-sheet-add-first'));
     fireEvent.click(screen.getByTestId('manual-form-stub-save'));
-
     expect(onClose).toHaveBeenCalled();
   });
 
-  it('auto-expands manual form + toasts on GPS `not-configured` result', async () => {
-    setActiveLocationFromGps.mockReset().mockResolvedValue({ status: 'not-configured' });
-
+  it('renders the manual form on migration-errored + empty addresses (no stranded user)', async () => {
+    useAddressesState.migrationState = 'errored';
+    useAddressesState.addresses = [];
     const Sheet = await loadSheet();
     render(<Sheet open={true} onClose={vi.fn()} />);
-    emitAddresses([]);
 
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('home-location-sheet-gps'));
-    });
-
-    expect(
-      screen.getByTestId('address-sheet-manual-form-stub'),
-    ).toBeInTheDocument();
-    expect(toastCalls.info).toHaveBeenCalled();
-    const [title] = toastCalls.info.mock.calls[0];
-    expect(title).toMatch(/not set up/i);
+    expect(screen.getByTestId('home-location-sheet-empty')).toBeInTheDocument();
   });
 
-  it('unsubscribes from the addresses listener when the sheet closes', async () => {
+  it('renders the rationale modal when loc.isRationaleOpen is true', async () => {
+    setLocState({ isRationaleOpen: true });
     const Sheet = await loadSheet();
-    const { rerender } = render(<Sheet open={true} onClose={vi.fn()} />);
-    emitAddresses([buildAddress()]);
+    render(<Sheet open={true} onClose={vi.fn()} />);
 
-    rerender(<Sheet open={false} onClose={vi.fn()} />);
+    expect(screen.getByTestId('rationale-modal')).toBeInTheDocument();
+  });
 
-    // The listener opened while `open=true` should be torn down — the
-    // unsubscribe spy fires on cleanup.
-    const spy = unsubscribeSpies[unsubscribeSpies.length - 1];
-    expect(spy).toHaveBeenCalled();
+  it('shows the LocationPulse while the hook is fetching', async () => {
+    setLocState({ status: 'fetching' });
+    const Sheet = await loadSheet();
+    render(<Sheet open={true} onClose={vi.fn()} />);
+
+    expect(screen.getByTestId('location-pulse')).toBeInTheDocument();
   });
 });

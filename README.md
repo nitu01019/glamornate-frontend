@@ -1,119 +1,150 @@
-# Glamornate — Frontend
+# frontend
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Node](https://img.shields.io/badge/node-%E2%89%A520-brightgreen.svg)]()
-[![Status](https://img.shields.io/badge/status-public_mirror-orange.svg)]()
+The customer-facing Glamornate web app. Same workspace also produces the Android APK via Capacitor.
 
-Customer-facing web + Android app for the Glamornate spa booking platform. Single Next.js codebase compiled into both a Next.js App Router web build and a Capacitor-wrapped Android APK.
+> ⚠️ **First-time onboarding?** See the canonical [**Onboarding Gotchas**](../README.md#onboarding-gotchas) in the root README before your first build (date-fns v3, `.env.production` clobber, iCloud ghost files, contracts resync, Stripe sentinel ordering, etc.). The list below is a frontend-scoped subset and may drift.
 
-> **⚠️ This is a public source mirror.** The repo is published for code review and reference. The build pipeline depends on internal workspace packages (`@glamornate/contracts`, `@glamornate/data-catalog`) that live outside this repo, so a fresh `git clone` will **not** be buildable end-to-end without those packages. See [Build limitations](#build-limitations) below.
+## Overview
+
+This is the primary booking surface: home, search, service detail, booking flow, payment (Stripe Elements), account, and post-booking states. It runs in three shapes from a single codebase:
+
+- **Web (production)** — Next.js server build, deployed to Vercel / Firebase Hosting.
+- **Web (local dev)** — `next dev` on `http://localhost:3000`.
+- **Android APK** — `BUILD_TARGET=mobile` flips Next.js into static-export mode (`output: 'export'`), Capacitor wraps the resulting `out/` into a WebView shell.
+
+The marketing website is a separate project maintained outside this monorepo and is not covered here.
 
 ## Stack
 
-Versions pinned in `package.json` (source of truth).
+Versions pinned in `package.json` (see that file for the source of truth).
 
-- **Next.js 15** (App Router) on **React 18**
-- **TypeScript 5** strict
-- **Tailwind CSS 3** + Radix UI primitives
-- **TanStack Query 5** + sync-storage persister
-- **Zustand 4** for ephemeral client state
-- **React Hook Form 7** + **Zod 3** (schemas shared via `@glamornate/contracts`)
-- **Firebase Web SDK 12** (auth, firestore, storage, messaging) + **App Check** (ReCaptcha v3)
-- **Sentry** (`@sentry/nextjs`, `@sentry/capacitor`)
-- **Capacitor 8** for the Android shell (geolocation, push, privacy-screen, firebase-auth, firebase-messaging)
+- Next.js `15.5.15` (App Router) on React `^18.2.0`
+- TypeScript `^5.3.3`, strict
+- Tailwind CSS `^3.4.1` + `tailwindcss-animate`, Radix UI primitives
+- TanStack Query `^5.17.19` with `@tanstack/query-sync-storage-persister`
+- Zustand `^4.4.7` for ephemeral client state
+- React Hook Form `^7.49.3` + Zod `^3.22.4` (schemas shared via `@glamornate/contracts`)
+- Stripe Elements (`@stripe/react-stripe-js ^2.9.0`, `@stripe/stripe-js ^4.10.0`)
+- Firebase web SDK `^12.11.0` (auth, firestore, storage, messaging)
+- Sentry (`@sentry/nextjs 10.43.0`, `@sentry/capacitor ^3.2.1`)
+- Capacitor `^8.3.1` (`@capacitor/android`, `@capacitor/ios`, plugins for keyboard, splash, status bar, geolocation, privacy screen, push, firebase-auth, firebase-messaging)
+- Vitest `^4.1.3` + `@testing-library/react ^16.3.2` (unit/component)
+- Playwright `^1.59.1` (e2e, multi-browser + mobile emulation)
 
-Payment model: **pay-at-spa** — no online payment integration.
+Package manager: **pnpm@9.15.0**. Node: **>=20**.
 
-## Repository layout
+## Scripts
 
-```
-.
-├── src/
-│   ├── app/             # Next.js App Router (routes, layouts, API handlers)
-│   ├── components/      # React components (booking, account, admin, ui, ...)
-│   ├── hooks/           # React hooks (auth, bookings, availability, FCM)
-│   ├── lib/             # Firebase clients, auth, App Check, helpers
-│   ├── store/           # Zustand stores (booking, cart, chat, popup)
-│   ├── data/            # Static catalog + blog content
-│   └── middleware.ts    # Next.js middleware (CSP, auth gates)
-├── public/              # Static assets (service imagery, AssetLinks)
-├── android/             # Capacitor Android shell
-├── tests/               # Playwright E2E + Vitest unit/integration
-├── docs/                # Public PRDs, runbooks, compliance docs
-├── scripts/             # Build/release tooling
-└── package.json
-```
-
-## Quick start
-
-Prerequisites:
-- Node.js ≥ 20
-- pnpm 9
-- (Mobile) Android Studio + JDK 17 (bundled with Android Studio)
+All commands run from this directory. Use `pnpm` — `npm` works but is not the supported path.
 
 ```bash
-pnpm install
-pnpm dev              # http://localhost:3000
+pnpm dev                # next dev on :3000
+pnpm build              # next build (web target). prebuild runs image opt + blur generation
+pnpm start              # next start (serve the built web app)
+pnpm lint               # next lint
+pnpm typecheck          # tsc --noEmit
+pnpm clean              # rm -rf .next node_modules
+
+pnpm optimize:images    # scripts/optimize-images.mjs (sharp pipeline for /public)
+pnpm generate:blur      # scripts/generate-blur.mjs (blur-up placeholders)
+
+pnpm test               # vitest watch
+pnpm test:run           # vitest run (CI mode)
+pnpm test:coverage      # vitest run --coverage (v8)
+pnpm test:e2e           # playwright test
+
+pnpm build:mobile       # bash scripts/build-mobile.sh — static export for Capacitor
+pnpm cap:sync           # npx cap sync (copy web assets into android/ + ios/)
+pnpm cap:open:android   # open Android Studio
+pnpm cap:open:ios       # open Xcode
+
+pnpm lighthouse         # lhci autorun (uses lighthouserc.js + lighthouse-budget.json)
 ```
 
-Populate `.env.local` from `.env.local.example` (Firebase web config, Sentry DSN, Google Maps API key, App Check ReCaptcha site key). All `NEXT_PUBLIC_*` values are public-by-design — they ship in the client bundle. Server-only secrets go in `.env.local`, not in source.
+`prebuild` is wired to `pnpm build`, so image optimization and blur generation always run before a web build.
 
-### Build limitations
+## Local development
 
-This public mirror does **not** include the workspace packages `@glamornate/contracts` (Zod schemas + types) and `@glamornate/data-catalog` (service catalog data). They are referenced via `file:../packages/*` in `package.json` and pnpm will fail to install without them.
+```bash
+pnpm install            # from this directory; pnpm workspace will resolve ../packages/*
+pnpm dev
+```
 
-To make this repo buildable from a clean clone, you would need to either (a) publish the two packages to a registry and update `package.json`, or (b) inline their `dist/` output into `vendor/` and switch to local file paths. Neither is set up in this mirror.
+Env files (gitignored, copy from `.env.example` at the repo root or ask the operator):
 
-## Common tasks
+- `.env.local` — local dev secrets (Firebase web config, Stripe publishable, NEXT_PUBLIC_* flags).
+- `.env.production` — used by `next build`. **Mobile builds overwrite this** from `.env.mobile` (see `scripts/build-mobile.sh`); restore it from git after a mobile build if you also do web builds locally.
+- `.env.mobile` — required for `pnpm build:mobile`. Holds the production Firebase + API config the APK ships with.
 
-| Command | What it does |
-|---|---|
-| `pnpm dev` | Local Next.js dev server |
-| `pnpm build` | Web production build |
-| `pnpm typecheck` | TypeScript-only check |
-| `pnpm lint` | ESLint |
-| `pnpm test` | Vitest unit tests |
-| `pnpm test:e2e` | Playwright E2E (requires app running on `:3000`) |
-| `pnpm build:mobile` | Android APK release build (`BUILD_TARGET=mobile`) |
-| `pnpm build:mobile:staging` | Android staging APK (debug AppCheck, sideloadable) |
+Public flags are namespaced `NEXT_PUBLIC_*` (see `src/lib/flags/*.ts`). The Playwright web server enables four flags by default — `HOME_V2_GRID`, `HOME_V2_HERO`, `ADDRESS_SHEET_V2`, `NOTIFICATIONS_FEED_V1` — so dev parity with e2e expects those on.
 
-The mobile target flips Next.js into static-export mode (`output: 'export'`); Capacitor wraps `out/` into a WebView shell. See `docs/mobile-build.md` and `docs/runbooks/android-*.md` for the full mobile pipeline.
+## Testing
 
-## Architecture highlights
+Unit / component tests live next to source under `src/**/*.test.ts(x)` and in `tests/unit/`, `tests/components/`, `tests/integration/`. Run them with vitest:
 
-- **App Check** enforced on backend callables and security-relevant Firestore reads. ReCaptcha v3 in production; debug provider gated behind `NEXT_PUBLIC_APP_CHECK_DEBUG === 'true'` AND `NEXT_PUBLIC_ENVIRONMENT === 'staging'`.
-- **CSP** with nonce-based `script-src 'strict-dynamic'`, no `unsafe-eval`. See `src/middleware.ts`.
-- **Firebase Admin SDK** is `'server-only'` and lazily proxied — accidental client-side import crashes loudly. Server routes use `verifyIdToken(token, /* checkRevoked */ true)` on every request.
-- **Booking pricing is server-authoritative** — client price is display-only; the backend `createBooking` callable re-derives every line item from the spa's service catalog.
-- **Account linking** (anonymous → phone) goes through a server-side `mergeUserAccounts` callable; bookings created pre-link are atomically transferred.
-- **No Stripe / online payment** in the customer flow — pay-at-spa post-service.
+```bash
+pnpm test               # watch mode
+pnpm test:run           # one-shot
+pnpm test:coverage      # writes coverage/ (v8 reporter)
+```
 
-## Documentation
+E2E specs live under `tests/e2e/` and run across five Playwright projects: chromium, firefox, webkit, Mobile Chrome (Pixel 5), Mobile Safari (iPhone 12). The dev server is auto-started by `playwright.config.ts`.
 
-- `docs/PRD-*.md` — product requirement documents (landing page redesign)
-- `docs/mobile-build.md` — mobile build overview
-- `docs/runbooks/android-keystore-setup.md` — keystore + signing
-- `docs/runbooks/android-app-check.md` — App Check provider setup
-- `docs/runbooks/android-release-build.md` — release APK pipeline
-- `docs/runbooks/apk-smoke-checklist.md` — pre-release sanity checks
-- `docs/runbooks/google-maps-key-setup.md` — Maps API key + restrictions
-- `docs/runbooks/google-maps-client-key-restrictions.md`
-- `docs/runbooks/rotate-google-maps-key.md`
-- `docs/runbooks/crashlytics-setup.md`
-- `docs/runbooks/verify-firestore-cache.md`
-- `docs/compliance/` — Play Store data-safety, listing, reachability audit
+```bash
+pnpm test:e2e
+pnpm test:e2e --project=chromium
+pnpm test:e2e tests/e2e/booking-flow.spec.ts
+```
 
-## Status
+Auth state convention: `tests/auth.setup.ts` signs a customer in once and writes session storage to `tests/.auth/customer.json`. Specs that need an authenticated session use the `customer` Playwright project (depends on `setup`) so they don't re-run sign-in for every spec. The directory is gitignored — regenerate by running the setup project. Quarantined / known-flaky specs live in `tests/quarantine/`.
 
-This is a working snapshot of an active project. The codebase is in production-bound iteration; some advisory items (e.g., server-component conversion of admin/spa/customer layouts, deduplication of cart preview/validate routes, Promise.all in cart pricing math) are tracked as follow-ups.
+CI defaults (`process.env.CI`): `retries=1`, `workers=1`, `forbidOnly=true`. Reports land in `tests/report/` (HTML, JSON, JUnit).
 
-## License
+## Mobile build (Capacitor → Android APK)
 
-This project is licensed under the [MIT License](LICENSE).
+The full runbook lives at `../docs/runbooks/mobile-plugins.md` and covers plugin registration, Firebase Android config, signing, and Play Console upload. Quick local APK:
 
-© 2026 Glamornate / nitu01019. See [LICENSE](LICENSE) for full terms.
+```bash
+pnpm build:mobile                    # writes static export to out/ (uses .env.mobile)
+npx cap sync android                 # copies out/ + plugin native code into android/
+cd android && ./gradlew assembleDebug
+# APK at android/app/build/outputs/apk/debug/app-debug.apk
+```
 
-## Contributing & Security
+`scripts/build-mobile.sh` temporarily moves server-only paths (`src/app/api`, `src/app/sitemap.ts`, `src/app/robots.ts`, `src/middleware.ts`) out of the way for the static export and restores them on exit. Don't kill the build mid-run — if you do, run `git status` and restore the renamed `.bak` / `_api_disabled` paths manually.
 
-- Issues and bug reports: see [CONTRIBUTING.md](CONTRIBUTING.md) and the GitHub issue tracker
-- Security disclosures: please follow [SECURITY.md](SECURITY.md) (do not open public issues for security)
+`capacitor.config.ts` registers SplashScreen, StatusBar, Keyboard, Geolocation, PrivacyScreen, and FirebaseAuthentication (`skipNativeAuth: true` — the web SDK stays the source of truth, the native plugin only mints a Google ID token to feed `signInWithCredential`).
+
+Release builds: `scripts/release-build.sh` (signed AAB), `scripts/bump-version.sh` (versionCode/versionName).
+
+## Linking the contracts package
+
+Workspace deps `@glamornate/contracts` and `@glamornate/data-catalog` are resolved via `file:../packages/*` entries in `package.json`. pnpm install handles them, but file-link semantics mean the workspace consumes the **published `dist/`** of each package, not source. After editing `packages/contracts/src` you must rebuild the package and copy its dist into both consumers:
+
+```bash
+# from repo root
+pnpm --filter @glamornate/contracts build
+cp packages/contracts/dist/* frontend/node_modules/@glamornate/contracts/dist/
+cp packages/contracts/dist/* backend/functions/node_modules/@glamornate/contracts/dist/
+```
+
+A clean reinstall (`pnpm install --force` from the repo root) also works but is slower. Symptom of a stale link: TypeScript errors on shapes that match the source but not the bundled `dist/index.d.ts`.
+
+## Common gotchas
+
+> ⚠️ See root README **[Onboarding Gotchas](../README.md#onboarding-gotchas)** for the canonical list (this section may drift).
+
+- **iCloud-sync ghost files / dirs.** This workspace lives under `~/Desktop` which is iCloud-synced. iCloud occasionally creates `Foo 2.tsx` and `api 2/` style duplicates that Next.js will happily try to compile, breaking static export with no useful error. Both globs are now in the root `.gitignore`. If a build mysteriously fails, run `git status` first and remove ghosts with explicit paths — **never run `git clean -fd` blindly**, it has wiped real untracked files in this tree before. Dry-run with `git clean -nd` first if you must.
+- **`date-fns` import paths.** This project pins `date-fns@^3.3.1`. v3 dropped the `.mjs` ESM subpath; importing `date-fns/isBefore.mjs` (or any other function with `.mjs`) will fail at build time. Use `import { isBefore } from 'date-fns'` or the bare path `date-fns/isBefore`. A regression here recently broke the booking calendar.
+- **Mobile build `.env.production` clobber.** `build:mobile` overwrites `.env.production` with `.env.mobile`. After a mobile build, restore it (`git checkout .env.production` if tracked, or recopy from your secrets manager) before doing a web build.
+- **Sentry sourcemaps.** `next.config.mjs` wires `withSentryConfig`. Without `SENTRY_AUTH_TOKEN` in the build env, sourcemap upload is silently skipped — the build still succeeds, but Sentry events on prod will be minified.
+- **Static-export incompatibilities.** In mobile mode, custom `headers()`, `next/image` server optimization, and route handlers (`src/app/api`) are unavailable. The mobile build script removes the API directory; the image loader is swapped to `src/lib/image-loader.ts` (pass-through). New code that touches those primitives needs an `if (isMobile)` branch.
+
+## Pointers
+
+- `../README.md` — repo-level overview, workspace layout, environment matrix.
+- `../CONTRIBUTING.md` — branch naming, commit convention, PR checklist.
+- `../docs/runbooks/` — operator runbooks (mobile plugins, Android keystore, CI secrets, landing repo, user-gates phases).
+- `../backend/` — Firebase Functions (callables, Stripe webhook, Firestore rules) consumed by this app.
+- `../packages/contracts/` — Zod schemas + TypeScript types shared between frontend and backend.
+- `./docs/`, `./CATALOG.md`, `./CHANGELOG.md` — workspace-local docs.

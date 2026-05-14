@@ -24,8 +24,13 @@ export const APP_CHECK_HELP_BODY =
 export const APP_CHECK_HELP_CTA = 'Get help';
 export const CANCEL_NO_REFUND = "Since no payment was taken, there's nothing to refund.";
 export const FRESH_START_HINT = 'Last booking confirmed. Starting a new one.';
-export const EMPTY_UPCOMING = 'No upcoming bookings.';
-export const EMPTY_PAST = 'No past bookings yet.';
-export const EMPTY_CANCELLED = 'No cancelled bookings.';
+// 2026-05-13: warmer voice — feels like an inviting concierge rather than a
+// generic "0 results" label. Pairs with the redesigned EmptyState card.
+export const EMPTY_UPCOMING = 'Your calendar is open.';
+export const EMPTY_UPCOMING_SUB = 'Treat yourself to something restorative.';
+export const EMPTY_PAST = 'Nothing in your history yet.';
+export const EMPTY_PAST_SUB = 'Completed appointments will live here.';
+export const EMPTY_CANCELLED = 'No cancellations.';
+export const EMPTY_CANCELLED_SUB = 'A clean slate is a good thing.';
 export const SUBMIT_GENERIC_ERROR = 'Something went wrong.';
 export const SUBMIT_RETRY = 'Try again';

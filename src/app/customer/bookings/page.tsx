@@ -15,27 +15,25 @@ import { Clock, X, RefreshCw, Loader2, Star } from 'lucide-react';
 import { ProtectedRoute } from '@/components/ProtectedRoute';
 import { useAuth } from '@/lib/auth-provider';
 import {
-  useBookings,
+  useBookingsRealtime,
   useCancelBooking,
-  useRescheduleBooking,
   type BookingWithId,
 } from '@/hooks/useBookings';
-import { useAvailableSlots } from '@/hooks/useAvailability';
 import { useSpa } from '@/hooks/useSpas';
-import { formatDateIST, todayIST } from '@/lib/date-ist';
+import { todayIST } from '@/lib/date-ist';
 import { AppCheckError } from '@/lib/error-handler';
-import { detectUnlinkedAccounts } from '@/lib/auth/account-linking';
+import { detectUnlinkedAccounts } from '@/auth/account-linking';
 import { Skeleton } from '@/components/ui/LoadingState';
 import { EmptyState } from './_components/EmptyState';
+import RescheduleSheet from './_components/RescheduleSheet';
 import { logger } from '@/lib/logger';
 import type { BookingStatus } from '@/types';
 
 // Tab types
 type TabType = 'upcoming' | 'past' | 'cancelled';
 
-const STATUS_LABEL: Record<string, string> = {
+const STATUS_LABEL: Record<BookingStatus, string> = {
   confirmed: 'Confirmed',
-  pending: 'Pending',
   en_route: 'On the way',
   in_progress: 'In progress',
   completed: 'Completed',
@@ -60,23 +58,70 @@ function formatTime(timeString: string): string {
   return `${displayHour}:${minutes} ${ampm}`;
 }
 
-// Booking card skeleton
+// 2026-05-13 redesign per Claude's frontend-design skill — refined Indian-
+// salon-luxury aesthetic. Curated per-status palette (no flat 100/700 pairs),
+// editorial date capsule, status pill with dot indicator, hairline divider
+// before the action row, deliberate destructive-action placement on the right.
+const STATUS_STYLES: Record<BookingStatus, { dot: string; label: string; pill: string }> = {
+  confirmed: {
+    dot: 'bg-emerald-500',
+    label: 'text-emerald-800',
+    pill: 'bg-emerald-50 ring-1 ring-inset ring-emerald-200/70',
+  },
+  en_route: {
+    dot: 'bg-amber-500',
+    label: 'text-amber-800',
+    pill: 'bg-amber-50 ring-1 ring-inset ring-amber-200/70',
+  },
+  in_progress: {
+    dot: 'bg-sky-500',
+    label: 'text-sky-800',
+    pill: 'bg-sky-50 ring-1 ring-inset ring-sky-200/70',
+  },
+  completed: {
+    dot: 'bg-stone-500',
+    label: 'text-stone-700',
+    pill: 'bg-stone-50 ring-1 ring-inset ring-stone-200/70',
+  },
+  cancelled: {
+    dot: 'bg-rose-500',
+    label: 'text-rose-800',
+    pill: 'bg-rose-50 ring-1 ring-inset ring-rose-200/70',
+  },
+  no_show: {
+    dot: 'bg-zinc-500',
+    label: 'text-zinc-700',
+    pill: 'bg-zinc-50 ring-1 ring-inset ring-zinc-200/70',
+  },
+};
+
 function BookingCardSkeleton() {
   return (
-    <div className="bg-white rounded-2xl p-4 shadow-sm">
-      <div className="flex gap-4">
-        <Skeleton className="w-16 h-16 rounded-xl" />
-        <div className="flex-1 space-y-2">
-          <Skeleton className="h-5 w-3/4" />
-          <Skeleton className="h-4 w-1/2" />
-          <Skeleton className="h-4 w-2/3" />
+    <div
+      role="status"
+      aria-label="Loading booking"
+      className="rounded-2xl border border-brand-maroon-100/60 bg-white p-5 shadow-[0_2px_12px_rgba(136,14,79,0.04)]"
+    >
+      <div className="flex gap-5">
+        {/* Date capsule skeleton */}
+        <Skeleton className="h-[72px] w-[58px] rounded-xl bg-gradient-to-b from-brand-maroon-50 to-brand-blush" />
+        <div className="flex-1 space-y-3 pt-1">
+          <div className="flex items-center gap-3">
+            <Skeleton className="h-5 w-2/5" />
+            <Skeleton className="h-5 w-16 rounded-full" />
+          </div>
+          <Skeleton className="h-4 w-1/3" />
+          <Skeleton className="h-4 w-3/5" />
         </div>
+      </div>
+      <div className="mt-5 flex gap-3 border-t border-stone-100 pt-4">
+        <Skeleton className="h-10 flex-1 rounded-xl" />
+        <Skeleton className="h-10 flex-1 rounded-xl" />
       </div>
     </div>
   );
 }
 
-// Booking Card
 function BookingCard({
   booking,
   onCancel,
@@ -88,109 +133,116 @@ function BookingCard({
   onReschedule: (booking: BookingWithId) => void;
   isCancelling: boolean;
 }) {
-  const getStatusColor = (status: BookingStatus) => {
-    switch (status) {
-      case 'confirmed':
-        return 'bg-brand-gold-100 text-brand-gold-700';
-      case 'completed':
-        return 'bg-green-100 text-green-700';
-      case 'cancelled':
-        return 'bg-red-100 text-red-700';
-      case 'in_progress':
-        return 'bg-blue-100 text-blue-700';
-      default:
-        return 'bg-gray-100 text-gray-700';
-    }
-  };
-
   const serviceName = booking.services?.[0]?.name || 'Service';
   const duration = booking.slot?.duration || booking.services?.[0]?.duration || 60;
-  const isUpcoming = booking.bookingStatus === 'confirmed';
+  const price = booking.pricing?.total;
+  const extraServiceCount = Math.max((booking.services?.length ?? 1) - 1, 0);
+  // SC-2: Cancel/Reschedule must remain available on every produced
+  // non-terminal status — `confirmed` and `en_route`. (See design doc §2b.1.)
+  const isUpcoming = booking.bookingStatus === 'confirmed' || booking.bookingStatus === 'en_route';
   const isPast = booking.bookingStatus === 'completed';
 
+  const status = STATUS_STYLES[booking.bookingStatus] ?? STATUS_STYLES.completed;
+  const slotDate = new Date(`${booking.slot.date}T00:00:00`);
+  const day = slotDate.getDate();
+  const month = slotDate.toLocaleDateString('en-US', { month: 'short' });
+  const weekday = slotDate.toLocaleDateString('en-US', { weekday: 'short' });
+
   return (
-    <div className="bg-white rounded-2xl p-4 shadow-sm">
-      <div className="flex gap-4">
-        {/* Date Box */}
-        <div className="w-16 h-16 bg-gradient-to-br from-brand-maroon-100 to-brand-gold-100 rounded-xl flex flex-col items-center justify-center shrink-0">
-          <span className="text-2xl font-bold text-brand-maroon-600">
-            {new Date(booking.slot.date).getDate()}
+    <article className="group relative overflow-hidden rounded-2xl border border-brand-maroon-100/60 bg-white p-5 shadow-[0_2px_12px_rgba(136,14,79,0.05)] transition-shadow hover:shadow-[0_6px_20px_rgba(136,14,79,0.08)]">
+      <div className="flex items-stretch gap-5">
+        {/* Date capsule — tear-off-calendar feel, brand-warm gradient,
+            day number is the hero glyph */}
+        <div className="flex h-[72px] w-[58px] shrink-0 flex-col items-center justify-center rounded-xl bg-gradient-to-b from-brand-maroon-50 via-brand-blush/60 to-brand-gold-50/80 ring-1 ring-inset ring-brand-maroon-200/60">
+          <span className="text-[10px] font-medium uppercase tracking-[0.18em] text-brand-maroon-500/80">
+            {weekday}
           </span>
-          <span className="text-xs text-brand-maroon-500 uppercase">
-            {new Date(booking.slot.date).toLocaleDateString('en-US', { month: 'short' })}
+          <span className="text-[26px] font-semibold leading-none text-brand-maroon-700 tabular-nums">
+            {day}
+          </span>
+          <span className="mt-0.5 text-[10px] font-medium uppercase tracking-[0.18em] text-brand-maroon-500/80">
+            {month}
           </span>
         </div>
 
-        {/* Content */}
-        <div className="flex-1 min-w-0">
-          <div className="flex items-start justify-between gap-2 mb-1">
-            <h3 className="font-semibold text-gray-900 line-clamp-1">{serviceName}</h3>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h3 className="truncate text-[15px] font-semibold leading-tight tracking-tight text-stone-900">
+                {serviceName}
+                {extraServiceCount > 0 && (
+                  <span className="ml-1.5 font-normal text-stone-500">
+                    +{extraServiceCount} more
+                  </span>
+                )}
+              </h3>
+              <p className="mt-0.5 truncate text-xs font-medium text-stone-500">
+                <SpaName spaId={booking.spaId} />
+              </p>
+            </div>
+
             <span
-              className={`text-xs px-2 py-0.5 rounded-full font-medium shrink-0 ${getStatusColor(
-                booking.bookingStatus,
-              )}`}
+              className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium ${status.pill} ${status.label}`}
             >
+              <i className={`h-1.5 w-1.5 rounded-full ${status.dot}`} aria-hidden />
               {STATUS_LABEL[booking.bookingStatus] ?? booking.bookingStatus.replace(/_/g, ' ')}
             </span>
           </div>
 
-          <p className="text-sm text-gray-500 mb-2 line-clamp-1">
-            <SpaName spaId={booking.spaId} />
-          </p>
-
-          <div className="flex items-center gap-3 text-xs text-gray-500">
-            <span className="flex items-center gap-1">
-              <Clock className="w-3.5 h-3.5" />
-              {formatTime(booking.slot.start)}
+          <div className="mt-3 flex items-center gap-2 text-[13px] text-stone-600">
+            <Clock className="h-3.5 w-3.5 text-stone-400" aria-hidden />
+            <span className="tabular-nums">{formatTime(booking.slot.start)}</span>
+            <span aria-hidden className="text-stone-300">
+              ·
             </span>
-            <span className="flex items-center gap-1">
-              <Clock className="w-3.5 h-3.5" />
-              {duration}min
-            </span>
+            <span className="tabular-nums">{duration} min</span>
+            {typeof price === 'number' && (
+              <>
+                <span aria-hidden className="text-stone-300">
+                  ·
+                </span>
+                <span className="font-medium tabular-nums text-stone-700">₹{price}</span>
+              </>
+            )}
           </div>
         </div>
       </div>
 
-      {/* Action Buttons */}
+      {/* Action row */}
       {isUpcoming && (
-        <div className="flex gap-2 mt-4 pt-4 border-t border-gray-100">
+        <div className="mt-5 grid grid-cols-2 gap-3 border-t border-stone-100 pt-4">
           <Button
             variant="outline"
-            size="sm"
-            className="flex-1 rounded-xl border-gray-200"
             onClick={() => onReschedule(booking)}
+            className="h-11 rounded-xl border-brand-maroon-200/70 bg-brand-blush/40 text-brand-maroon-700 hover:bg-brand-maroon-50 hover:text-brand-maroon-800"
           >
-            <RefreshCw className="w-4 h-4 mr-1" />
+            <RefreshCw className="mr-1.5 h-4 w-4" aria-hidden />
             Reschedule
           </Button>
           <Button
-            variant="outline"
-            size="sm"
-            className="flex-1 rounded-xl border-gray-200 text-red-600 hover:text-red-700 hover:bg-red-50"
+            variant="ghost"
             onClick={() => onCancel(booking)}
             disabled={isCancelling}
+            className="h-11 rounded-xl text-rose-600 hover:bg-rose-50 hover:text-rose-700"
           >
-            <X className="w-4 h-4 mr-1" />
-            {isCancelling ? 'Cancelling...' : 'Cancel'}
+            <X className="mr-1.5 h-4 w-4" aria-hidden />
+            {isCancelling ? 'Cancelling…' : 'Cancel'}
           </Button>
         </div>
       )}
 
       {isPast && (
-        <div className="mt-4 pt-4 border-t border-gray-100">
-          <Link href={`/spas/${booking.spaId}/review?booking=${booking.id}`}>
-            <Button
-              variant="outline"
-              size="sm"
-              className="w-full rounded-xl border-brand-gold-200 text-brand-gold-600 hover:bg-brand-gold-50"
-            >
-              <Star className="w-4 h-4 mr-1" />
-              Leave a Review
-            </Button>
+        <div className="mt-5 border-t border-stone-100 pt-4">
+          <Link
+            href={`/spas/${booking.spaId}/review?booking=${booking.id}`}
+            className="inline-flex h-11 w-full items-center justify-center gap-1.5 rounded-xl border border-brand-gold-200 bg-brand-gold-50/40 px-4 text-sm font-medium text-brand-gold-700 transition-colors hover:bg-brand-gold-50 hover:text-brand-gold-800"
+          >
+            <Star className="h-4 w-4" aria-hidden />
+            Leave a review
           </Link>
         </div>
       )}
-    </div>
+    </article>
   );
 }
 
@@ -212,14 +264,43 @@ function shouldShowPayAtSpaBanner(): boolean {
   return localStorage.getItem(PAY_AT_SPA_DISMISSED_KEY) !== until;
 }
 
+// 2026-05-13: editorial page header — display-weight title with a
+// one-line concierge subtitle, refresh button reframed as an icon-only
+// affordance with a quiet spin-on-load state.
+function PageHeader({ onRefresh, isLoading }: { onRefresh: () => void; isLoading: boolean }) {
+  return (
+    <header className="border-b border-stone-200/60 bg-white px-4 pb-3 pt-5">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h1 className="font-serif text-[28px] font-semibold leading-tight tracking-tight text-stone-900">
+            My Bookings
+          </h1>
+          <p className="mt-1 text-[13px] italic leading-snug text-stone-500">
+            Your appointments, in one place.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onRefresh}
+          aria-label="Refresh bookings"
+          className="mt-1 inline-flex h-9 w-9 items-center justify-center rounded-full text-stone-500 transition-all hover:bg-stone-100 hover:text-brand-maroon-700 active:scale-95 disabled:opacity-50"
+          disabled={isLoading}
+        >
+          <RefreshCw className={`h-[18px] w-[18px] ${isLoading ? 'animate-spin' : ''}`} />
+        </button>
+      </div>
+    </header>
+  );
+}
+
 function BookingsContent() {
   const { authResolved, firebaseUser } = useAuth();
   const [activeTab, setActiveTab] = useState<TabType>('upcoming');
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [rescheduleDialogOpen, setRescheduleDialogOpen] = useState(false);
   const [selectedBooking, setSelectedBooking] = useState<BookingWithId | null>(null);
-  const [selectedDate, setSelectedDate] = useState<Date | null>(null);
-  const [selectedTime, setSelectedTime] = useState<string | null>(null);
+  // 2026-05-14: selectedDate/selectedTime moved into RescheduleSheet; the
+  // page no longer mediates the picker state.
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(
     null,
   );
@@ -237,9 +318,22 @@ function BookingsContent() {
     setShowPayAtSpaBanner(false);
   };
 
-  const { data: bookings = [], isLoading, error, refetch } = useBookings();
+  // 2026-05-13: Firestore real-time subscription. Replaces the old
+  // React-Query one-shot path which silently hung in `status: pending,
+  // fetchStatus: idle` on Android cold-start (PersistQueryClientProvider
+  // restore wedge on Capacitor Preferences). The new hook also gives
+  // instant propagation of server-side changes — a spa cancelling /
+  // moving the booking shows up on the customer's screen in <1s with no
+  // refresh tap.
+  const { data: bookingsData, isLoading, isRefreshing, error, refetch } = useBookingsRealtime();
+  // `useMemo` keeps the `bookings` reference stable across renders when
+  // `bookingsData` itself is stable; without it, `?? []` makes a fresh
+  // array literal on every render and downstream `useMemo` hooks that
+  // depend on `bookings` re-fire each tick.
+  const bookings = useMemo(() => bookingsData ?? [], [bookingsData]);
   const cancelBooking = useCancelBooking();
-  const rescheduleBooking = useRescheduleBooking();
+  // 2026-05-14: `useRescheduleBooking` now lives inside RescheduleSheet,
+  // so the page no longer needs a top-level mutation handle.
 
   // F6: defer `new Date()` to post-mount to avoid SSR/CSR hydration drift.
   const [now, setNow] = useState<Date | null>(null);
@@ -247,28 +341,11 @@ function BookingsContent() {
     setNow(new Date());
   }, []);
 
-  // Generate dates for rescheduling
-  const dates = useMemo(() => {
-    if (!now) return [];
-    return Array.from({ length: 14 }, (_, i) => {
-      const date = new Date(now);
-      date.setDate(date.getDate() + i + 1);
-      return date;
-    });
-  }, [now]);
-
-  // Get available slots — Phase 2/3 (Booking Flow Fix v3.1, 2026-05-02):
-  // `slot.date` is an IST wall-clock string and the backend's
-  // `getAvailableSlots` schema expects `serviceDuration`. The legacy
-  // `toISOString().split('T')[0]` shifted late-IST dates by one day;
-  // `formatDateIST` keeps the picked date stable.
-  const dateStr = selectedDate ? formatDateIST(selectedDate) : null;
+  // 2026-05-14: the page no longer renders an inline reschedule date/time
+  // picker — RescheduleSheet owns its own calendar + slot grid + mutation.
+  // We only need `serviceDuration` here to forward as a prop so the sheet
+  // computes the slot's end-time correctly.
   const serviceDuration = selectedBooking?.slot?.duration || 60;
-  const { data: availabilityData, isLoading: slotsLoading } = useAvailableSlots(
-    selectedBooking?.spaId && dateStr
-      ? { spaId: selectedBooking.spaId, date: dateStr, serviceDuration }
-      : null,
-  );
 
   // Filter bookings by tab — Phase 2 (Booking Flow Fix v3.1, 2026-05-02):
   // compare IST date strings, not `Date.toDateString()`. The legacy
@@ -281,7 +358,8 @@ function BookingsContent() {
 
     return bookings
       .filter((booking) => {
-        const bookingDateStr = booking.slot.date;
+        const bookingDateStr = booking.slot?.date;
+        if (!bookingDateStr) return false;
 
         if (activeTab === 'upcoming') {
           return (
@@ -315,8 +393,6 @@ function BookingsContent() {
 
   const handleRescheduleClick = (booking: BookingWithId) => {
     setSelectedBooking(booking);
-    setSelectedDate(null);
-    setSelectedTime(null);
     setRescheduleDialogOpen(true);
   };
 
@@ -340,45 +416,11 @@ function BookingsContent() {
     }
   };
 
-  const handleConfirmReschedule = async () => {
-    if (!selectedBooking || !selectedDate || !selectedTime) return;
-
-    const [hours, minutes] = selectedTime.split(':').map(Number);
-    const endHours = hours + Math.floor((minutes + serviceDuration) / 60);
-    const endMinutes = (minutes + serviceDuration) % 60;
-    const endTime = `${String(endHours).padStart(2, '0')}:${String(endMinutes).padStart(2, '0')}`;
-
-    try {
-      await rescheduleBooking.mutateAsync({
-        bookingId: selectedBooking.id,
-        newSlot: {
-          // Phase 2 (Booking Flow Fix v3.1, 2026-05-02): IST wall-clock day,
-          // not a UTC slice from `toISOString()`.
-          date: formatDateIST(selectedDate),
-          start: selectedTime,
-          end: endTime,
-          duration: serviceDuration,
-        },
-      });
-      setRescheduleDialogOpen(false);
-      setSelectedBooking(null);
-      refetch();
-      setFeedback({ type: 'success', message: 'Booking rescheduled successfully.' });
-      setTimeout(() => setFeedback(null), 4000);
-    } catch (err) {
-      logger.error('Failed to reschedule booking', err, { component: 'customer/bookings' });
-      setRescheduleDialogOpen(false);
-      setFeedback({ type: 'error', message: 'Failed to reschedule booking. Please try again.' });
-      setTimeout(() => setFeedback(null), 6000);
-    }
-  };
-
-  const getDayName = (date: Date): string => {
-    if (!now) return '';
-    const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-    if (date.toDateString() === tomorrow.toDateString()) return 'Tomorrow';
-    return date.toLocaleDateString('en-US', { weekday: 'short' });
-  };
+  // 2026-05-14: `handleConfirmReschedule` + `getDayName` removed — the
+  // new RescheduleSheet's `handleConfirm` owns end-time computation +
+  // calls useRescheduleBooking internally; its MonthCalendar derives
+  // weekday labels from the IST date itself, so we no longer need the
+  // page-level helpers.
 
   // Phase 6 (Booking Flow Fix v3.1, 2026-05-02): wait for the auth SDK to
   // resolve before deciding "no bookings". Without this, the Capacitor
@@ -386,13 +428,11 @@ function BookingsContent() {
   // 500ms even when the user is signed in (Issue C on APK).
   if (!authResolved) {
     return (
-      <div className="min-h-screen bg-gray-50 animate-fade-in">
-        <div className="bg-white px-4 pt-4 pb-2">
-          <h1 className="text-2xl font-bold text-gray-900">My Bookings</h1>
-        </div>
+      <div className="min-h-screen bg-stone-50 animate-fade-in">
+        <PageHeader onRefresh={refetch} isLoading={true} />
         <div className="px-4 pt-6 space-y-4">
           {Array.from({ length: 3 }).map((_, i) => (
-            <Skeleton key={i} className="h-32 w-full rounded-2xl" />
+            <BookingCardSkeleton key={i} />
           ))}
         </div>
       </div>
@@ -400,11 +440,8 @@ function BookingsContent() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 animate-fade-in">
-      {/* Header */}
-      <div className="bg-white px-4 pt-4 pb-2">
-        <h1 className="text-2xl font-bold text-gray-900">My Bookings</h1>
-      </div>
+    <div className="min-h-screen bg-stone-50 animate-fade-in">
+      <PageHeader onRefresh={refetch} isLoading={isLoading} />
 
       {/* Patch SB-8 / Phase 4.5 W4.5-C: pay-at-spa transition banner.
           Auto-hides after `NEXT_PUBLIC_PAY_AT_SPA_BANNER_UNTIL`. */}
@@ -436,28 +473,48 @@ function BookingsContent() {
         </div>
       )}
 
-      {/* Tab Bar */}
-      <div className="sticky top-14 z-40 bg-white border-b border-gray-100 px-4">
-        <div className="flex">
-          {(['upcoming', 'past', 'cancelled'] as TabType[]).map((tab) => (
-            <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              className={`flex-1 py-3 text-sm font-medium border-b-2 transition-colors ${
-                activeTab === tab
-                  ? 'text-brand-maroon-600 border-brand-maroon-600'
-                  : 'text-gray-500 border-transparent hover:text-gray-700'
-              }`}
-            >
-              {tab.charAt(0).toUpperCase() + tab.slice(1)}
-            </button>
-          ))}
+      {/* Tab Bar — sliding underline indicator, refined inactive weight */}
+      <div className="sticky top-14 z-40 border-b border-stone-200/70 bg-white/95 px-2 backdrop-blur supports-[backdrop-filter]:bg-white/80">
+        <div className="relative flex">
+          {(['upcoming', 'past', 'cancelled'] as TabType[]).map((tab) => {
+            const isActive = activeTab === tab;
+            // Tab label is rendered as raw text on the <button> so it doesn't
+            // collide with the pill-span selector used by SC-2 tests.
+            const label = tab === 'upcoming' ? 'Upcoming' : tab === 'past' ? 'Past' : 'Cancelled';
+            return (
+              <button
+                key={tab}
+                onClick={() => setActiveTab(tab)}
+                aria-current={isActive ? 'page' : undefined}
+                className={`relative flex-1 py-3.5 text-[13px] uppercase tracking-[0.08em] transition-colors ${
+                  isActive
+                    ? 'font-semibold text-brand-maroon-700'
+                    : 'font-medium text-stone-400 hover:text-stone-600'
+                }`}
+              >
+                {label}
+                {isActive && (
+                  <span className="absolute inset-x-4 bottom-[-1px] h-[2px] rounded-full bg-gradient-to-r from-brand-maroon-500 to-brand-gold-500" />
+                )}
+              </button>
+            );
+          })}
         </div>
       </div>
 
+      {/* Subtle "Updating…" pill on re-subscribe — keeps the user's place
+          rather than swapping cards for skeletons during a manual refresh. */}
+      {isRefreshing && !isLoading && (
+        <div className="flex justify-center pt-3">
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-white px-3 py-1 text-[11px] font-medium text-stone-500 ring-1 ring-inset ring-stone-200">
+            <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
+            Updating…
+          </span>
+        </div>
+      )}
+
       {/* Content */}
-      <div className="px-4 py-4">
-        {/* Loading */}
+      <div className="px-4 py-5">
         {isLoading && (
           <div className="space-y-4">
             <BookingCardSkeleton />
@@ -471,45 +528,48 @@ function BookingsContent() {
             one of: error_app_check, error_other, empty_unlinked, empty_ok,
             or the booking cards. Centralised here so the matrix lives in
             one file rather than four ad-hoc branches. */}
-        {!isLoading && (() => {
-          if (error instanceof AppCheckError) {
-            return <EmptyState tab={activeTab} state="error_app_check" onRetry={() => refetch()} />;
-          }
-          if (error) {
-            return <EmptyState tab={activeTab} state="error_other" onRetry={() => refetch()} />;
-          }
+        {!isLoading &&
+          (() => {
+            if (error instanceof AppCheckError) {
+              return (
+                <EmptyState tab={activeTab} state="error_app_check" onRetry={() => refetch()} />
+              );
+            }
+            if (error) {
+              return <EmptyState tab={activeTab} state="error_other" onRetry={() => refetch()} />;
+            }
 
-          const unlinked =
-            filteredBookings.length === 0 &&
-            firebaseUser !== null &&
-            detectUnlinkedAccounts({
-              hasZeroBookings: bookings.length === 0,
-              providerCount: firebaseUser.providerData.length,
-              hasEmail: !!firebaseUser.email,
-              hasPhone: !!firebaseUser.phoneNumber,
-            });
+            const unlinked =
+              filteredBookings.length === 0 &&
+              firebaseUser !== null &&
+              detectUnlinkedAccounts({
+                hasZeroBookings: bookings.length === 0,
+                providerCount: firebaseUser.providerData.length,
+                hasEmail: !!firebaseUser.email,
+                hasPhone: !!firebaseUser.phoneNumber,
+              });
 
-          if (filteredBookings.length === 0 && unlinked) {
-            return <EmptyState tab={activeTab} state="empty_unlinked" />;
-          }
-          if (filteredBookings.length === 0) {
-            return <EmptyState tab={activeTab} state="empty_ok" />;
-          }
+            if (filteredBookings.length === 0 && unlinked) {
+              return <EmptyState tab={activeTab} state="empty_unlinked" />;
+            }
+            if (filteredBookings.length === 0) {
+              return <EmptyState tab={activeTab} state="empty_ok" />;
+            }
 
-          return (
-            <div className="space-y-4">
-              {filteredBookings.map((booking) => (
-                <BookingCard
-                  key={booking.id}
-                  booking={booking}
-                  onCancel={handleCancelClick}
-                  onReschedule={handleRescheduleClick}
-                  isCancelling={cancelBooking.isPending && selectedBooking?.id === booking.id}
-                />
-              ))}
-            </div>
-          );
-        })()}
+            return (
+              <div className="space-y-4">
+                {filteredBookings.map((booking) => (
+                  <BookingCard
+                    key={booking.id}
+                    booking={booking}
+                    onCancel={handleCancelClick}
+                    onReschedule={handleRescheduleClick}
+                    isCancelling={cancelBooking.isPending && selectedBooking?.id === booking.id}
+                  />
+                ))}
+              </div>
+            );
+          })()}
       </div>
 
       {/* Cancel Dialog */}
@@ -538,90 +598,29 @@ function BookingsContent() {
         </DialogContent>
       </Dialog>
 
-      {/* Reschedule Dialog */}
-      <Dialog open={rescheduleDialogOpen} onOpenChange={setRescheduleDialogOpen}>
-        <DialogContent className="mx-4 rounded-2xl max-h-[80vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Reschedule Booking</DialogTitle>
-            <DialogDescription>Select a new date and time</DialogDescription>
-          </DialogHeader>
-
-          {/* Date Selection */}
-          <div className="py-4">
-            <h4 className="text-sm font-medium text-gray-700 mb-3">Select Date</h4>
-            <div className="flex overflow-x-auto gap-2 pb-2 scrollbar-hide">
-              {dates.map((date) => {
-                const isSelected = selectedDate?.toDateString() === date.toDateString();
-                return (
-                  <button
-                    key={date.toISOString()}
-                    onClick={() => {
-                      setSelectedDate(date);
-                      setSelectedTime(null);
-                    }}
-                    className={`flex-shrink-0 w-14 p-2 rounded-xl text-center transition-all ${
-                      isSelected ? 'bg-brand-maroon-500 text-white' : 'bg-gray-100 text-gray-700'
-                    }`}
-                  >
-                    <div className="text-[10px]">{getDayName(date)}</div>
-                    <div className="text-lg font-semibold">{date.getDate()}</div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Time Selection */}
-          {selectedDate && (
-            <div className="py-4 border-t border-gray-100">
-              <h4 className="text-sm font-medium text-gray-700 mb-3">Select Time</h4>
-              {slotsLoading ? (
-                <div className="flex justify-center py-4">
-                  <Loader2 className="w-6 h-6 animate-spin text-brand-maroon-500" />
-                </div>
-              ) : availabilityData?.slots?.length ? (
-                <div className="grid grid-cols-4 gap-2">
-                  {availabilityData.slots.map((slot) => (
-                    <button
-                      key={slot.start}
-                      onClick={() => slot.available && setSelectedTime(slot.start)}
-                      disabled={!slot.available}
-                      className={`py-2 text-sm rounded-lg transition-all ${
-                        !slot.available
-                          ? 'bg-gray-100 text-gray-300'
-                          : selectedTime === slot.start
-                          ? 'bg-brand-maroon-500 text-white'
-                          : 'bg-gray-100 text-gray-700'
-                      }`}
-                    >
-                      {formatTime(slot.start)}
-                    </button>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-center text-gray-500 py-4">No available slots</p>
-              )}
-            </div>
-          )}
-
-          <DialogFooter className="gap-2 pt-4 border-t border-gray-100">
-            <Button
-              variant="outline"
-              onClick={() => setRescheduleDialogOpen(false)}
-              className="rounded-xl"
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={handleConfirmReschedule}
-              disabled={!selectedDate || !selectedTime || rescheduleBooking.isPending}
-              className="bg-gradient-to-r from-brand-gold-500 to-brand-maroon-500 text-white rounded-xl"
-            >
-              {rescheduleBooking.isPending ? 'Rescheduling...' : 'Confirm'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* Reschedule — mobile-first bottom sheet (2026-05-14). Replaces
+          the v3 centered <Dialog> which overflowed 80vh on small viewports
+          and had a non-sticky footer. RescheduleSheet owns its own state
+          (selectedDate, selectedTime, mutation) so the page no longer
+          needs the local handlers + useAvailableSlots fetch. */}
+      <RescheduleSheet
+        open={rescheduleDialogOpen}
+        onClose={() => setRescheduleDialogOpen(false)}
+        bookingId={selectedBooking?.id ?? null}
+        currentSlot={selectedBooking?.slot ?? null}
+        serviceDuration={serviceDuration}
+        onSuccess={() => {
+          setRescheduleDialogOpen(false);
+          setSelectedBooking(null);
+          refetch();
+          setFeedback({ type: 'success', message: 'Booking rescheduled successfully.' });
+          setTimeout(() => setFeedback(null), 4000);
+        }}
+        onError={(message) => {
+          setFeedback({ type: 'error', message });
+          setTimeout(() => setFeedback(null), 6000);
+        }}
+      />
 
       {/* Bottom spacing */}
       <div className="h-8" />

@@ -2,7 +2,7 @@
 
 This runbook covers the **one-time Firebase Console setup** required before any Android APK (debug or release) can pass App Check on a real device. Without these steps every callable function and every `/api/v1/*` REST call from the device will be rejected with `App Check token missing` and the user-facing error toast will read **"Booking unavailable on this device. Reinstall the app or contact support."** (the kind-aware copy added in Phase C of `apk-network-request-failed-systematic-debug`).
 
-Background context: see `<internal-debug-notes>` for the full systematic-debugging output that led here.
+Background context: see `/Users/nitishbhardwaj/.claude/plans/apk-network-request-failed-systematic-debug.md` for the full systematic-debugging output that led here.
 
 ## Why this matters
 
@@ -33,7 +33,7 @@ This is what you ship to users. Once configured, every device that installs your
 ### Build + install
 
 ```bash
-cd <repo-root>
+cd /Users/nitishbhardwaj/Desktop/Glamornate/frontend
 pnpm build:mobile:release
 # Produces android/app/build/outputs/apk/release/app-release.apk + .aab
 adb install -r android/app/build/outputs/apk/release/app-release.apk
@@ -213,7 +213,7 @@ This is distinct from the manual debug-token flow above: that one uses `assemble
 
 1. **Build the staging APK.**
    ```bash
-   cd <repo-root>
+   cd /Users/nitishbhardwaj/Desktop/Glamornate/frontend
    pnpm build:mobile:staging
    # Will exist after TEAM D ships. Produces:
    #   android/app/build/outputs/apk/stagingRelease/app-stagingRelease.apk

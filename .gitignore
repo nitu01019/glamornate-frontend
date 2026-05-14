@@ -61,31 +61,3 @@ android/app/keystore.properties
 # Mobile env
 .env.mobile
 .env.mobile.local
-
-# belt-and-suspenders: explicit non-local env files
-.env
-.env.production
-.env.development
-.env.test
-.env.mobile
-firebase-debug*.log
-firestore-debug*.log
-
-# dev/AI tooling — should not ship to public repo
-.audit-findings/
-.claude/
-.idea/
-.vscode/
-.cursor/
-.gstack/
-.code-review-graph/
-.build-history.log
-
-# Apple/Windows signing certificates
-*.p12
-*.pfx
-
-# Firebase Admin / service-account credentials (never commit)
-service-account*.json
-*-service-account.json
-*adminsdk*.json

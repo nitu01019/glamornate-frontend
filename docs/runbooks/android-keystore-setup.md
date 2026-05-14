@@ -13,7 +13,7 @@
 ## 1. Prerequisites
 
 - A JDK 17+ is on your `PATH` (`keytool` ships with the JDK).
-- You are at the repository root: `<repo-root>`.
+- You are at the repository root: `/Users/nitishbhardwaj/Desktop/Glamornate/frontend`.
 - You have decided on three strings:
   - **storePassword** — 16+ char random password (the "keystore" password).
   - **keyPassword** — 16+ char random password (the "alias" password). May equal storePassword but a distinct value is more defensible.

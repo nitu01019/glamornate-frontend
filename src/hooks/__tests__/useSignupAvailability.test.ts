@@ -211,10 +211,9 @@ describe('useSignupAvailability', () => {
     });
 
     expect(callFunctionMock).toHaveBeenCalledTimes(1);
-    expect(callFunctionMock).toHaveBeenCalledWith(
-      'checkSignupAvailability',
-      { email: VALID_EMAIL },
-    );
+    expect(callFunctionMock).toHaveBeenCalledWith('checkSignupAvailability', {
+      email: VALID_EMAIL,
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -258,9 +257,7 @@ describe('useSignupAvailability', () => {
   // -------------------------------------------------------------------------
 
   it('stays idle when the email value is empty', async () => {
-    const { result } = renderHook(() =>
-      useSignupAvailability('email', '', { trigger: 'both' }),
-    );
+    const { result } = renderHook(() => useSignupAvailability('email', '', { trigger: 'both' }));
 
     await act(async () => {
       await Promise.resolve();
@@ -313,14 +310,247 @@ describe('useSignupAvailability', () => {
   });
 
   // -------------------------------------------------------------------------
+  // A-5-01 regression: retry uses the LATEST value, not the stale captured one.
+  // Pre-fix: retry probed the original `raw` argument captured by the closure,
+  // ignoring subsequent keystrokes; the token bump on retry neutralised the
+  // stale-response guard so a stale result could land.
+  // Post-fix: retry reads valueRef.current and aborts if input changed.
+  // -------------------------------------------------------------------------
+
+  it('A-5-01: retry probes the latest value (not the stale captured one)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+
+    callFunctionMock
+      .mockRejectedValueOnce(new Error('transient network'))
+      .mockResolvedValueOnce({ email: { available: true, taken: false } });
+
+    const { rerender } = renderHook(
+      ({ email }: { email: string }) => useSignupAvailability('email', email, { trigger: 'both' }),
+      { initialProps: { email: 'first@example.com' } },
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // User types a different value before the retry fires.
+    rerender({ email: 'second@example.com' });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1100);
+    });
+
+    // The retry must NOT have probed the stale value a second time. Either it
+    // aborts (snapshot mismatch) or it probes the latest value.
+    const retryCalls = callFunctionMock.mock.calls.slice(1);
+    for (const [, payload] of retryCalls) {
+      const email = (payload as { email?: string }).email;
+      expect(email).not.toBe('first@example.com');
+    }
+
+    vi.useRealTimers();
+  });
+
+  // -------------------------------------------------------------------------
+  // A-5-05: stale-response suppression — only the latest probe's result wins.
+  // -------------------------------------------------------------------------
+
+  it('A-5-05: stale-response suppression — only the latest probe commits', async () => {
+    let resolveFirst: ((value: unknown) => void) | undefined;
+    let resolveSecond: ((value: unknown) => void) | undefined;
+
+    callFunctionMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveFirst = resolve;
+        }),
+    );
+    callFunctionMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveSecond = resolve;
+        }),
+    );
+
+    const { result, rerender } = renderHook(
+      ({ email }: { email: string }) => useSignupAvailability('email', email, { trigger: 'both' }),
+      { initialProps: { email: 'first@example.com' } },
+    );
+
+    // Drain the initial mount → first call started.
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Second keystroke kicks off the second probe.
+    rerender({ email: 'second@example.com' });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Resolve the SECOND (latest) probe first — that result must commit.
+    await act(async () => {
+      resolveSecond?.({ email: { available: false, taken: true } });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(result.current.status).toBe('taken');
+    expect(result.current.lastCheckedEmail).toBe('second@example.com');
+
+    // Resolve the STALE first probe with a contradictory result. The stale
+    // token guard must suppress it — status stays 'taken'.
+    await act(async () => {
+      resolveFirst?.({ email: { available: true, taken: false } });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(result.current.status).toBe('taken');
+    expect(result.current.lastCheckedEmail).toBe('second@example.com');
+  });
+
+  // -------------------------------------------------------------------------
+  // A-5-05: triggerCheck immediate flag suppresses next debounced run.
+  // -------------------------------------------------------------------------
+
+  it('A-5-05: triggerCheck immediate flag suppresses next debounced run', async () => {
+    const { result, rerender } = renderHook(
+      ({ email }: { email: string }) => useSignupAvailability('email', email, { trigger: 'both' }),
+      { initialProps: { email: VALID_EMAIL } },
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const initialCallCount = callFunctionMock.mock.calls.length;
+
+    act(() => {
+      result.current.triggerCheck();
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const afterTriggerCount = callFunctionMock.mock.calls.length;
+    expect(afterTriggerCount).toBe(initialCallCount + 1);
+
+    // Re-render with the same value — the debounced effect would re-fire,
+    // but the immediate flag must suppress it.
+    rerender({ email: VALID_EMAIL });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(callFunctionMock.mock.calls.length).toBe(afterTriggerCount);
+  });
+
+  // -------------------------------------------------------------------------
+  // A-5-05: trigger:'onChange' mode auto-fires on debounced changes.
+  // -------------------------------------------------------------------------
+
+  it("A-5-05: trigger:'onChange' fires callFunction on debounced changes", async () => {
+    const { result } = renderHook(() =>
+      useSignupAvailability('email', VALID_EMAIL, { trigger: 'onChange' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.status).toBe('available');
+    });
+
+    expect(callFunctionMock).toHaveBeenCalledTimes(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // A-5-05: phone field path — PHONE_RE pre-validation + payload shape.
+  // -------------------------------------------------------------------------
+
+  it('A-5-05: phone field — valid E.164 taken sets status taken', async () => {
+    callFunctionMock.mockResolvedValue({ phone: { available: false, taken: true } });
+
+    const { result } = renderHook(() =>
+      useSignupAvailability('phone', '+919999912345', { trigger: 'both' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.status).toBe('taken');
+    });
+
+    expect(callFunctionMock).toHaveBeenCalledWith('checkSignupAvailability', {
+      phone: '+919999912345',
+    });
+  });
+
+  it('A-5-05: phone field — valid E.164 available sets status available', async () => {
+    callFunctionMock.mockResolvedValue({ phone: { available: true, taken: false } });
+
+    const { result } = renderHook(() =>
+      useSignupAvailability('phone', '+919999912345', { trigger: 'both' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.status).toBe('available');
+    });
+  });
+
+  it('A-5-05: phone field — invalid value stays idle (no callFunction)', async () => {
+    const { result } = renderHook(() =>
+      useSignupAvailability('phone', 'not-a-phone', { trigger: 'both' }),
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(callFunctionMock).not.toHaveBeenCalled();
+    expect(result.current.status).toBe('idle');
+  });
+
+  // -------------------------------------------------------------------------
+  // A-5-05: lastCheckedEmail transform — trimmed; payload lowercased.
+  // -------------------------------------------------------------------------
+
+  it('A-5-05: lastCheckedEmail equals trimmed value; payload is lowercased', async () => {
+    callFunctionMock.mockResolvedValue({ email: { available: true, taken: false } });
+
+    const { result } = renderHook(() =>
+      useSignupAvailability('email', '  Test@Example.com  ', { trigger: 'both' }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.status).toBe('available');
+    });
+
+    // The hook trims the value before storing — casing is preserved here.
+    expect(result.current.lastCheckedEmail).toBe('Test@Example.com');
+
+    // Verify the network payload IS lowercased — the transform contract.
+    expect(callFunctionMock).toHaveBeenCalledWith('checkSignupAvailability', {
+      email: 'test@example.com',
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Additional: hook returns stable shape ({ status, lastCheckedEmail, triggerCheck })
   // -------------------------------------------------------------------------
 
   it('returns the required shape keys from the start', () => {
     // With an empty value the hook never fires, so we can safely assert idle.
-    const { result } = renderHook(() =>
-      useSignupAvailability('email', ''),
-    );
+    const { result } = renderHook(() => useSignupAvailability('email', ''));
 
     expect(result.current).toHaveProperty('status');
     expect(result.current).toHaveProperty('lastCheckedEmail');

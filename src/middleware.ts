@@ -1,8 +1,12 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
-// Protected API route prefixes that require authentication
-const protectedRoutes = ['/admin', '/customer', '/spa'];
+// L-1 (2026-05-11): the previous `protectedRoutes` middleware gate guarded
+// `/api/admin|customer|spa/*` paths that have no corresponding Next.js route
+// handlers in `src/app/api/` — the early-reject "optimization" was dead
+// surface. Auth-required Cloud Functions endpoints self-protect server-side
+// via `verifyAuth()` middleware. Page auth is handled client-side by
+// `ProtectedRoute`. Removed along with the dead `__session` cookie fallback.
 
 /**
  * Generate a cryptographically random per-request nonce (base64).
@@ -87,28 +91,6 @@ export function buildCsp(nonce: string, isDev: boolean = false): string {
 }
 
 export function middleware(request: NextRequest) {
-  const { pathname } = request.nextUrl;
-
-  // Protect API routes only - page auth is handled client-side by ProtectedRoute
-  if (pathname.startsWith('/api/')) {
-    const isProtectedApi = protectedRoutes.some((route) => pathname.startsWith(`/api${route}`));
-
-    if (isProtectedApi) {
-      // NOTE: This check only verifies the *presence* of an auth token, not its
-      // validity. Next.js middleware runs on the Edge Runtime, which cannot use
-      // firebase-admin to verify tokens. Full token verification happens
-      // server-side in api-auth.ts on each API route handler. This shallow check
-      // is an early-reject optimization for unauthenticated requests to avoid
-      // unnecessary API handler invocations.
-      const authToken =
-        request.headers.get('authorization') || request.cookies.get('__session')?.value;
-
-      if (!authToken) {
-        return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
-      }
-    }
-  }
-
   // -----------------------------------------------------------------------
   // Nonce-based CSP (S5)
   // -----------------------------------------------------------------------
@@ -141,7 +123,11 @@ export function middleware(request: NextRequest) {
   // Security headers
   response.headers.set('X-Content-Type-Options', 'nosniff');
   response.headers.set('X-Frame-Options', 'DENY');
-  response.headers.set('X-XSS-Protection', '1; mode=block');
+  // 2026-05-11 (Cinch-D-HDR-05 / Cipher-D15 / T3-F60): X-XSS-Protection is
+  // deprecated. Modern browsers (Chrome ≥78, Edge, Firefox, Safari) ignore
+  // it; legacy IE/Edge implementations of the XSS auditor are themselves
+  // reflective-XSS vectors. CSP supersedes. OWASP Secure Headers Project
+  // recommends omitting.
   response.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
   response.headers.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
   response.headers.set('Content-Security-Policy', csp);

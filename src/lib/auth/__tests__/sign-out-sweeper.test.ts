@@ -4,7 +4,7 @@ import {
   sweepClientState,
   type FcmHandle,
   type StoreHandle,
-} from '../sign-out-sweeper';
+} from '@/auth/sign-out-sweeper';
 
 // ---------------------------------------------------------------------------
 // Test doubles
@@ -104,6 +104,8 @@ describe('sweepClientState', () => {
       'localStorage.purge',
       'sessionStorage.clear',
       'serviceWorker.unregister',
+      // firestore.idbClear removed 2026-05-14 — terminated client broke next sign-in
+      'capacitor.prefsClear',
       'firebase.signOut',
     ]);
     expect(result.signedOut).toBe(true);
@@ -236,7 +238,7 @@ describe('sweepClientState', () => {
   it('removes only keys matching the allowlisted prefixes', async () => {
     const ls = makeStorage({
       'glamornate-cart': 'x',
-      'glamornate_user_location': 'x',
+      glamornate_user_location: 'x',
       'glm:feature-flags': 'x',
       'cart:v2:draft': 'x',
       'location:recent': 'x',
@@ -291,7 +293,7 @@ describe('sweepClientState', () => {
   // -------------------------------------------------------------------------
 
   it('clears sessionStorage fully', async () => {
-    const ss = makeStorage({ 'glamornate-popup-seen': 'true', 'anything': '1' });
+    const ss = makeStorage({ 'glamornate-popup-seen': 'true', anything: '1' });
     await sweepClientState({
       queryClient: null,
       stores: [],
