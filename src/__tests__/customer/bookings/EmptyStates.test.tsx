@@ -35,10 +35,13 @@ describe('EmptyState matrix (Patch DR-6)', () => {
       });
     }
 
-    it('tab=upcoming renders a "Book a service" link to /spas', () => {
+    it('tab=upcoming renders a "Book a service" link to /services', () => {
+      // 2026-05-13: single-salon app — CTA goes to the category list, not
+      // the legacy `/spas` marketplace route. See default-spa.ts and the
+      // booking wizard refactor.
       render(<EmptyState tab="upcoming" state="empty_ok" />);
       const link = screen.getByRole('link', { name: /book a service/i });
-      expect(link).toHaveAttribute('href', '/spas');
+      expect(link).toHaveAttribute('href', '/services');
     });
 
     it('tab=past has no CTA link', () => {

@@ -12,6 +12,22 @@
             <certificates src="system"/>
         </trust-anchors>
     </base-config>
+    <!--
+      Emulator + localhost: cleartext allowed so the WebView can reach
+      `npx cap serve` / `next dev` on 10.0.2.2 (Android emulator's host
+      loopback) or localhost. These addresses are unroutable from outside
+      the device, so allowing cleartext here cannot leak production traffic.
+
+      Lint rule: `<domain-config>` must live at the top level of
+      `<network-security-config>` — nesting it inside `<debug-overrides>`
+      triggers `Nested <domain-config> elements are not allowed in
+      debug-overrides`.
+    -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">10.0.2.2</domain>
+        <domain includeSubdomains="true">127.0.0.1</domain>
+        <domain includeSubdomains="true">localhost</domain>
+    </domain-config>
     <debug-overrides>
         <trust-anchors>
             <certificates src="system"/>

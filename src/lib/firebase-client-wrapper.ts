@@ -349,7 +349,10 @@ class FirebaseClientWrapper {
             collectionName,
             documentId,
           });
-          callback(null, await this.classifyFirestoreReadError(error, { collectionName, documentId }));
+          callback(
+            null,
+            await this.classifyFirestoreReadError(error, { collectionName, documentId }),
+          );
         },
       );
     } catch (error) {
@@ -429,7 +432,7 @@ class FirebaseClientWrapper {
     // network blip". Without this, every TypeError-shaped failure
     // collapsed into the lossy "Network request failed" toast (the bug
     // we hit on the debug-signed APK that lacked a registered debug
-    // token). See <internal-debug-notes>.
+    // token). See /Users/nitishbhardwaj/.claude/plans/apk-network-request-failed-systematic-debug.md.
     let appCheckToken: string | null = null;
     try {
       appCheckToken = await getAppCheckToken();
@@ -478,15 +481,19 @@ class FirebaseClientWrapper {
         code === 'functions/deadline-exceeded' ||
         code === 'unavailable';
 
-      // App Check rejection — two shapes:
-      //   (a) error message explicitly mentions App Check (server envelope
+      // App Check rejection — three shapes, in order of decreasing reliability:
+      //   (a) A-6-11: server propagates explicit `details.reason === 'app-check'`
+      //       in the HttpsError data — deterministic, no string-matching.
+      //   (b) error message explicitly mentions App Check (server envelope
       //       leaks through, or Firebase SDK surfaces it).
-      //   (b) request was fired with no `X-Firebase-AppCheck` header AND the
+      //   (c) request was fired with no `X-Firebase-AppCheck` header AND the
       //       server returned `functions/internal` / `functions/unauthenticated`,
       //       which is the exact pattern an `enforceAppCheck:true` callable
       //       produces when token mint failed (see
       //       backend/functions/src/utils/callable-opts.ts).
+      const errorDetails = (error as { details?: { reason?: string } } | null)?.details;
       const appCheckRejected =
+        errorDetails?.reason === 'app-check' ||
         message.includes('app check') ||
         message.includes('app-check') ||
         (!tokenWasPresent &&
@@ -495,8 +502,8 @@ class FirebaseClientWrapper {
       const classification = appCheckRejected
         ? 'app_check_rejected'
         : isTransient
-          ? 'transient'
-          : 'other';
+        ? 'transient'
+        : 'other';
 
       Sentry.addBreadcrumb({
         category: 'callable_error',
@@ -561,13 +568,17 @@ class FirebaseClientWrapper {
     const appCheckRejected =
       message.includes('app check') ||
       message.includes('app-check') ||
-      (!tokenWasPresent &&
-        (code === 'permission-denied' || code === 'unauthenticated'));
+      (!tokenWasPresent && (code === 'permission-denied' || code === 'unauthenticated'));
 
     Sentry.addBreadcrumb({
       category: 'firestore_read_error',
       level: appCheckRejected ? 'warning' : 'error',
-      data: { ...context, code, tokenWasPresent, classification: appCheckRejected ? 'app_check_rejected' : 'other' },
+      data: {
+        ...context,
+        code,
+        tokenWasPresent,
+        classification: appCheckRejected ? 'app_check_rejected' : 'other',
+      },
     });
 
     if (appCheckRejected) {

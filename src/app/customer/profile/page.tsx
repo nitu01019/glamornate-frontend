@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -9,6 +9,8 @@ import { getFirebaseFirestore } from '@/lib/firebase-client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { useToastActions } from '@/lib/providers';
+import { cn } from '@/lib/utils';
 import {
   Dialog,
   DialogContent,
@@ -57,6 +59,10 @@ interface MenuItemProps {
   onClick?: () => void;
   iconColor?: string;
   danger?: boolean;
+  subtitle?: string;
+  chevron?: boolean;
+  disabled?: boolean;
+  loading?: boolean;
 }
 
 function MenuItem({
@@ -66,16 +72,34 @@ function MenuItem({
   onClick,
   iconColor = 'text-gray-500',
   danger,
+  subtitle,
+  chevron = true,
+  disabled,
+  loading,
 }: MenuItemProps) {
+  const iconClass = cn(
+    'w-5 h-5 flex-shrink-0',
+    danger ? 'text-red-500' : iconColor,
+    loading && 'animate-spin',
+  );
   const content = (
     <div
-      className={`flex items-center justify-between p-4 bg-white ${danger ? 'text-red-600' : 'text-gray-900'}`}
+      className={cn(
+        'flex items-center justify-between p-4 bg-transparent',
+        danger ? 'text-red-600' : 'text-gray-900',
+        disabled && 'opacity-60',
+      )}
     >
-      <div className="flex items-center gap-3">
-        <Icon className={`w-5 h-5 ${danger ? 'text-red-500' : iconColor}`} />
-        <span className="font-medium">{label}</span>
+      <div className="flex items-center gap-3 min-w-0">
+        <Icon className={iconClass} aria-hidden="true" />
+        <div className="min-w-0">
+          <span className="font-medium block truncate">{label}</span>
+          {subtitle && (
+            <span className="text-xs text-gray-500 mt-0.5 block truncate">{subtitle}</span>
+          )}
+        </div>
       </div>
-      <ChevronRight className="w-5 h-5 text-gray-300" />
+      {chevron && <ChevronRight className="w-5 h-5 text-gray-300 flex-shrink-0" />}
     </div>
   );
 
@@ -88,7 +112,12 @@ function MenuItem({
   }
 
   return (
-    <button onClick={onClick} className="w-full text-left active:bg-gray-50">
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className="w-full text-left active:bg-gray-50 disabled:cursor-not-allowed"
+    >
       {content}
     </button>
   );
@@ -102,6 +131,7 @@ function ProfilePageContent() {
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(
     null,
   );
@@ -109,6 +139,7 @@ function ProfilePageContent() {
     displayName: user?.profile?.displayName || '',
     phone: user?.profile?.phone || '',
   });
+  const toast = useToastActions();
 
   // Update profile mutation
   const updateProfileMutation = useMutation({
@@ -136,10 +167,18 @@ function ProfilePageContent() {
     },
   });
 
-  const handleSignOut = async () => {
+  // performSignOut is contractually fire-and-forget — it sweeps state and
+  // calls setUser(null) regardless of any internal error (sign-out.ts:149).
+  // Enqueue the toast BEFORE await so it lands in the queue while the toast
+  // provider is still mounted (it lives at root layout but defensive order
+  // is cheaper than a regression).
+  const handleSignOut = useCallback(async () => {
+    if (signingOut) return;
+    setSigningOut(true);
+    toast.success('Signed out');
     await signOut();
     router.push('/');
-  };
+  }, [signingOut, toast, signOut, router]);
 
   const handleSaveProfile = () => {
     updateProfileMutation.mutate(formData);
@@ -233,7 +272,7 @@ function ProfilePageContent() {
               icon={Heart}
               label="Favorites"
               href="/customer/favorites"
-              iconColor="text-pink-500"
+              iconColor="text-brand-maroon-500"
             />
           </div>
         </div>
@@ -248,7 +287,7 @@ function ProfilePageContent() {
               icon={Bell}
               label="Notifications"
               href="/customer/notifications"
-              iconColor="text-purple-500"
+              iconColor="text-brand-maroon-500"
             />
           </div>
         </div>
@@ -263,42 +302,68 @@ function ProfilePageContent() {
               icon={HelpCircle}
               label="Help & Support"
               href="/help"
-              iconColor="text-green-500"
+              iconColor="text-brand-maroon-500"
             />
             <MenuItem icon={Info} label="About" href="/about" iconColor="text-gray-500" />
           </div>
         </div>
 
-        {/* Account Actions */}
-        <div className="mb-6">
-          <h2 className="text-sm font-medium text-gray-500 px-4 mb-2 uppercase tracking-wider">
-            Actions
-          </h2>
-          <div className="rounded-2xl overflow-hidden shadow-sm divide-y divide-gray-100">
-            {ACCOUNT_FLAGS.changePasswordEnabled && (
+        {/* Security */}
+        {ACCOUNT_FLAGS.changePasswordEnabled && (
+          <div className="mb-6">
+            <h2 className="text-sm font-medium text-gray-500 px-4 mb-2 uppercase tracking-wider">
+              Security
+            </h2>
+            <div className="bg-white rounded-2xl overflow-hidden shadow-sm">
               <MenuItem
                 icon={Shield}
                 label="Change Password"
+                subtitle="Update your account password"
                 onClick={() => setChangePasswordOpen(true)}
-                iconColor="text-indigo-500"
+                iconColor="text-brand-maroon-500"
+                chevron={false}
               />
-            )}
+            </div>
+          </div>
+        )}
+
+        {/* Session */}
+        <div className="mb-6">
+          <h2 className="text-sm font-medium text-gray-500 px-4 mb-2 uppercase tracking-wider">
+            Session
+          </h2>
+          <div className="bg-white rounded-2xl overflow-hidden shadow-sm">
             <MenuItem
-              icon={LogOut}
-              label="Sign Out"
+              icon={signingOut ? Loader2 : LogOut}
+              label={signingOut ? 'Signing out…' : 'Sign Out'}
+              subtitle="You can sign back in anytime"
               onClick={handleSignOut}
               iconColor="text-gray-500"
+              chevron={false}
+              disabled={signingOut}
+              loading={signingOut}
             />
-            {ACCOUNT_FLAGS.deleteEnabled && (
+          </div>
+        </div>
+
+        {/* Danger Zone */}
+        {ACCOUNT_FLAGS.deleteEnabled && (
+          <div className="mb-6">
+            <h2 className="text-sm font-medium text-red-700 px-4 mb-2 uppercase tracking-wider">
+              Danger Zone
+            </h2>
+            <div className="bg-red-50/40 border border-red-200 rounded-2xl overflow-hidden shadow-sm">
               <MenuItem
                 icon={Trash2}
                 label="Delete Account"
+                subtitle="Permanently removes your account and all data"
                 onClick={() => setDeleteAccountOpen(true)}
                 danger
+                chevron={false}
               />
-            )}
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
       {/* Edit Profile Dialog */}
@@ -364,10 +429,7 @@ function ProfilePageContent() {
 
       {/* Delete Account Sheet (Phase 3 — Agent 3B) */}
       {ACCOUNT_FLAGS.deleteEnabled && (
-        <DeleteAccountSheet
-          open={deleteAccountOpen}
-          onClose={() => setDeleteAccountOpen(false)}
-        />
+        <DeleteAccountSheet open={deleteAccountOpen} onClose={() => setDeleteAccountOpen(false)} />
       )}
 
       {/* Bottom spacing */}

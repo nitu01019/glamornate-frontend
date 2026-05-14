@@ -6,7 +6,7 @@
  */
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useState, useEffect } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { firebaseClientWrapper, QueryConstraintConfig } from '@/lib/firebase-client-wrapper';
 import { isFirebaseConfigured } from '@/lib/firebase';
 import { useAuth } from '@/lib/auth-provider';
@@ -121,11 +121,29 @@ export const bookingQueryKeys = {
  * ```
  */
 export function useBookings(filters?: BookingFilters) {
-  const { user, firebaseUser } = useAuth();
+  const { firebaseUser } = useAuth();
+  const uid = firebaseUser?.uid;
 
-  return useQuery({
-    queryKey: bookingQueryKeys.list(filters),
-    enabled: !!firebaseUser,
+  const query = useQuery({
+    // 2026-05-13: include `uid` in the queryKey so a cached failure / empty
+    // result from a prior (or anonymous) session cannot bleed into the next
+    // signed-in user. Pre-fix, the key was `['bookings','list',filters]` —
+    // shared across uids — and a single race-window failure (see below)
+    // would lock the bookings list to "empty" for the rest of the session.
+    queryKey: [...bookingQueryKeys.list(filters), uid ?? null],
+    // 2026-05-13: gate on `uid` alone — the legacy `enabled: !!firebaseUser`
+    // fired the query before `user` (the Firestore profile) had resolved,
+    // and the queryFn's `user?.role === 'customer'` gate then silently
+    // dropped the `where userId == auth.uid` filter, producing a cached
+    // empty/error result. The fix is two-fold: (1) the queryKey now
+    // includes `uid` so a swap between sessions invalidates the cache, and
+    // (2) the queryFn below always adds the userId filter when no override
+    // is supplied — independent of `user.role`. With the filter always
+    // present, gating `enabled` on `user` is unnecessary and (worse)
+    // wedges the hook into a non-subscribing state during the brief
+    // pre-profile window that meant a successful `refetch()` after that
+    // window still failed to propagate fresh data to the component.
+    enabled: !!uid,
     // Phase 6 (Booking Flow Fix v3.1, 2026-05-02): aggressively refresh on
     // mount + reconnect so a returning APK user sees fresh bookings even
     // after a long background. `refetchOnWindowFocus: false` because
@@ -143,20 +161,31 @@ export function useBookings(filters?: BookingFilters) {
       try {
         const constraints: QueryConstraintConfig[] = [];
 
-        // Role-based filtering - customers only see their own bookings
-        if (user?.role === 'customer' && !filters?.userId) {
-          constraints.push({
-            type: 'where',
-            field: 'userId',
-            operator: '==',
-            value: firebaseUser?.uid ?? '',
-          });
-        } else if (filters?.userId) {
+        // 2026-05-13: ALWAYS add a userId filter when no explicit `filters.userId`
+        // override is provided. Pre-fix this was gated on
+        // `user?.role === 'customer'`, but that races against the auth
+        // listener splitting `setFirebaseUser` and `setUser` across an
+        // `await` (see auth/provider/auth-listener.ts:80–145). The bookings
+        // list page is wrapped in `<ProtectedRoute requiredRoles=['customer']>`
+        // (bookings/page.tsx:638), so by the time this hook is *consumed*
+        // we know the caller is a customer; the Firestore security rule
+        // (bookings/{id} allow read: resource.data.userId == auth.uid …)
+        // enforces the owner/staff/admin matrix per-doc regardless. The
+        // explicit `filters.userId` branch still wins so admin / spa-owner
+        // call-sites can target other users when they have rule coverage.
+        if (filters?.userId) {
           constraints.push({
             type: 'where',
             field: 'userId',
             operator: '==',
             value: filters.userId,
+          });
+        } else if (uid) {
+          constraints.push({
+            type: 'where',
+            field: 'userId',
+            operator: '==',
+            value: uid,
           });
         }
 
@@ -205,6 +234,8 @@ export function useBookings(filters?: BookingFilters) {
     },
     staleTime: 0, // always refetch — bookings are real-time
   });
+
+  return query;
 }
 
 /**
@@ -441,20 +472,153 @@ export function useBookingRealtime(bookingId: string | null | undefined): Bookin
   return booking;
 }
 
+// =============================================================================
+// Realtime list subscription
+// =============================================================================
+
+export interface UseBookingsRealtimeResult {
+  /** Current snapshot of the user's bookings. `null` until first snapshot. */
+  data: BookingWithId[] | null;
+  /** True before the first snapshot arrives (initial subscribe). */
+  isLoading: boolean;
+  /** Re-subscribing in response to a manual refresh or uid change. */
+  isRefreshing: boolean;
+  /** Latest error from the listener, classified as AppError / AppCheckError. */
+  error: AppError | null;
+  /** Tear down + re-establish the subscription. Cheap. */
+  refetch(): void;
+}
+
+/**
+ * Real-time subscription to the signed-in customer's bookings.
+ *
+ * Why this exists (2026-05-13): the one-shot React-Query path used to power
+ * the bookings list (`useBookings()`) hung in `status: pending, fetchStatus:
+ * idle` on Android cold-start — `PersistQueryClientProvider`'s restore
+ * promise wedges on Capacitor (the `Preferences.then() is not implemented on
+ * android` error surfaces from a sibling code path and the persist client
+ * never flips `isRestoring: false`), so `refetchOnMount: 'always'` silently
+ * never fires. The user had to manually tap Refresh to see their bookings.
+ *
+ * Real-time subscription via Firestore `onSnapshot` is both (a) the right
+ * architecture for "I just booked, it should appear instantly" UX and (b)
+ * independent of React-Query's lifecycle gates, so the auto-fetch hang is
+ * structurally impossible here. Server-side state changes (a spa cancels
+ * the booking, status transitions to en_route / in_progress, reschedule
+ * via console) all propagate to the customer's list within a few hundred
+ * milliseconds.
+ *
+ * The hook mirrors the shape of `useBookings()` so the page-level branches
+ * (`isLoading` → skeleton, `error` → error UI, `data` → cards) don't change
+ * meaningfully. `refetch()` tears down and re-establishes the listener;
+ * useful when the Capacitor WebView resumes from background and the
+ * listener may have been suspended.
+ */
+export function useBookingsRealtime(): UseBookingsRealtimeResult {
+  const { firebaseUser } = useAuth();
+  const uid = firebaseUser?.uid;
+  const [data, setData] = useState<BookingWithId[] | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [error, setError] = useState<AppError | null>(null);
+  // Bumping this triggers a re-subscribe via the useEffect dependency.
+  const [refreshKey, setRefreshKey] = useState(0);
+  const hooksLogger = bookingsLogger;
+
+  useEffect(() => {
+    if (!uid || !isFirebaseConfigured()) {
+      setData([]);
+      setIsLoading(false);
+      return;
+    }
+
+    setIsLoading((prev) => (data === null ? true : prev));
+    setIsRefreshing(data !== null);
+    setError(null);
+
+    const constraints: QueryConstraintConfig[] = [
+      { type: 'where', field: 'userId', operator: '==', value: uid },
+      { type: 'orderBy', field: 'createdAt', direction: 'desc' },
+    ];
+
+    const unsubscribe = firebaseClientWrapper.subscribeToQuery<Booking>(
+      'bookings',
+      constraints,
+      (documents, err) => {
+        if (err) {
+          hooksLogger.error('Realtime bookings subscription error', err, { uid });
+          setError(err);
+          setIsLoading(false);
+          setIsRefreshing(false);
+          return;
+        }
+        setData(documents.map((doc) => ({ id: doc.id, ...doc.data })));
+        setError(null);
+        setIsLoading(false);
+        setIsRefreshing(false);
+      },
+    );
+
+    return () => {
+      try {
+        unsubscribe();
+      } catch (cleanupErr) {
+        hooksLogger.warn('Realtime bookings unsubscribe threw', { uid, cleanupErr });
+      }
+    };
+    // `data` intentionally omitted: it would re-subscribe on every snapshot.
+    // The refreshKey bump is the manual re-subscribe trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uid, refreshKey]);
+
+  const refetch = useCallback(() => {
+    setRefreshKey((k) => k + 1);
+  }, []);
+
+  return { data, isLoading, isRefreshing, error, refetch };
+}
+
+/**
+ * Non-terminal statuses surfaced as "upcoming" to the customer (SC-10 / V-8).
+ *
+ * Server-side `where bookingStatus in [...]` would force a query rewrite; the
+ * existing `useBookings` hook only supports `==`. Filtering client-side keeps
+ * a single shared query while letting the BottomNav badge + dashboard widget
+ * include a customer who is already mid-service (`en_route`, `in_progress`).
+ */
+const UPCOMING_STATUSES = ['confirmed', 'en_route', 'in_progress'] as const;
+
 /**
  * Fetch user's upcoming bookings
- * Convenience hook for getting confirmed/upcoming bookings
+ * Convenience hook for getting all non-terminal bookings (confirmed,
+ * en_route, in_progress). Closes V-8 — pre-fix the BottomNav badge showed
+ * "0 upcoming" for a customer mid-service.
  *
- * @returns Query result with upcoming bookings
+ * @returns Query result with upcoming bookings (filtered client-side)
  */
 export function useUpcomingBookings() {
   const { firebaseUser } = useAuth();
 
-  return useBookings({
+  // Limit raised from 10 → 30 to compensate for client-side filtering: the
+  // server now returns the user's most-recent 30 bookings of any status, and
+  // we narrow to non-terminal here. 30 is comfortably above the practical
+  // ceiling of concurrent active bookings per customer.
+  const query = useBookings({
     userId: firebaseUser?.uid,
-    status: 'confirmed',
-    limit: 10,
+    limit: 30,
   });
+
+  const data = useMemo(
+    () =>
+      (query.data ?? []).filter(
+        (b) =>
+          typeof b.bookingStatus === 'string' &&
+          (UPCOMING_STATUSES as readonly string[]).includes(b.bookingStatus),
+      ),
+    [query.data],
+  );
+
+  return { ...query, data };
 }
 
 /**
@@ -487,7 +651,7 @@ export function useBookingHistory(limitCount: number = 20) {
             type: 'where',
             field: 'bookingStatus',
             operator: 'in',
-            value: ['completed', 'cancelled'],
+            value: ['completed', 'cancelled', 'no_show'],
           },
           {
             type: 'orderBy',

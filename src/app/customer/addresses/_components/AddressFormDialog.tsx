@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { z } from 'zod';
 import {
   Dialog,
@@ -17,9 +17,13 @@ import {
   Briefcase,
   Tag,
   Loader2,
-  Navigation,
+  MapPin,
+  MapPinOff,
 } from 'lucide-react';
-import type { SavedAddress, AddressLabel } from '@/types';
+import type { SavedAddress, ManualAddressLabel } from '@/types';
+import { useCurrentLocation } from '@/lib/location/hooks/useCurrentLocation';
+import { LocationPulse } from '@/components/location/LocationPulse';
+import { LocationRationaleModal } from '@/components/location/LocationRationaleModal';
 
 // ---------------------------------------------------------------------------
 // Zod Schema
@@ -65,19 +69,32 @@ type AddressFormData = z.infer<typeof addressSchema>;
 // Props
 // ---------------------------------------------------------------------------
 
+/**
+ * v3 (2026-05-13 — location unification): `onSubmit` now also receives the
+ * `geo` coords from `useCurrentLocation` when the user filled the form
+ * via the "Use Current Location" button. The caller forwards them to the
+ * `addAddress` callable so booking flows can mount the map without a
+ * second client-side geocode round-trip.
+ */
+export type AddressFormPayload = AddressFormData & {
+  geo?: { lat: number; lng: number; accuracy?: number };
+};
+
 interface AddressFormDialogProps {
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
   readonly editingAddress: SavedAddress | null;
-  readonly onSubmit: (data: AddressFormData) => Promise<void>;
+  readonly onSubmit: (data: AddressFormPayload) => Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
 // Label config
 // ---------------------------------------------------------------------------
 
+// Only manual labels are user-pickable here. `'detected'` is a GPS auto-
+// save label and never shows up as a chip in this manual edit dialog.
 const LABEL_OPTIONS: readonly {
-  value: AddressLabel;
+  value: ManualAddressLabel;
   label: string;
   icon: typeof Home;
 }[] = [
@@ -93,7 +110,10 @@ const LABEL_OPTIONS: readonly {
 function getInitialValues(address: SavedAddress | null): AddressFormData {
   if (address) {
     return {
-      label: address.label,
+      // Editing a GPS-detected entry coerces the label to 'other' so the
+      // user can pick a real category (Home/Work) — `'detected'` is
+      // auto-only and never user-selectable in this manual form.
+      label: address.label === 'detected' ? 'other' : address.label,
       name: address.name,
       phone: address.phone,
       flatHouse: address.flatHouse,
@@ -132,7 +152,9 @@ export function AddressFormDialog({
   const [formData, setFormData] = useState<AddressFormData>(initial);
   const [errors, setErrors] = useState<Partial<Record<keyof AddressFormData, string>>>({});
   const [submitting, setSubmitting] = useState(false);
-  const [locating, setLocating] = useState(false);
+  // Single canonical location hook — cache-hit instant paint, bridge GPS,
+  // backend reverse-geocode, typed error taxonomy. See plan §6 Step 4.
+  const loc = useCurrentLocation();
 
   // Reset form when dialog opens with new data
   const handleOpenChange = useCallback(
@@ -159,43 +181,21 @@ export function AddressFormDialog({
   };
 
   // -----------------------------------------------------------------------
-  // Geolocation + Nominatim reverse-geocode
+  // Populate form fields from the canonical location hook. Runs whenever a
+  // fresh address lands (cache-hit on open or new GPS fix after a tap).
+  // We only overwrite the geo-derived fields (street/city/state/pincode);
+  // name, phone, flatHouse, landmark stay user-typed.
   // -----------------------------------------------------------------------
-  const handleUseCurrentLocation = useCallback(async () => {
-    if (!navigator.geolocation) return;
-    setLocating(true);
-    try {
-      const position = await new Promise<GeolocationPosition>(
-        (resolve, reject) =>
-          navigator.geolocation.getCurrentPosition(resolve, reject, {
-            enableHighAccuracy: true,
-            timeout: 10_000,
-          }),
-      );
-      const { latitude, longitude } = position.coords;
-      const res = await fetch(
-        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}&addressdetails=1`,
-        { headers: { 'Accept-Language': 'en' } },
-      );
-      if (!res.ok) throw new Error('Geocoding failed');
-      const data = await res.json();
-      const addr = data.address ?? {};
-
-      setFormData((prev) => ({
-        ...prev,
-        street: [addr.road, addr.neighbourhood, addr.suburb]
-          .filter(Boolean)
-          .join(', ') || prev.street,
-        city: addr.city || addr.town || addr.village || prev.city,
-        state: addr.state || prev.state,
-        pincode: addr.postcode || prev.pincode,
-      }));
-    } catch {
-      // Silently fail -- user can fill manually
-    } finally {
-      setLocating(false);
-    }
-  }, []);
+  useEffect(() => {
+    if (!loc.address) return;
+    setFormData((prev) => ({
+      ...prev,
+      street: loc.address?.line1 ?? prev.street,
+      city: loc.address?.city ?? prev.city,
+      state: loc.address?.state ?? prev.state,
+      pincode: loc.address?.pincode ?? prev.pincode,
+    }));
+  }, [loc.address]);
 
   // -----------------------------------------------------------------------
   // Submit
@@ -217,9 +217,19 @@ export function AddressFormDialog({
       return;
     }
 
+    // v3: attach the GPS coords surfaced by useCurrentLocation when the
+    // user filled this form via the radar-pulse button. Booking flows
+    // can then center the map on these coords without re-geocoding.
+    const payload: AddressFormPayload = {
+      ...result.data,
+      ...(loc.coords && loc.source === 'gps'
+        ? { geo: { lat: loc.coords.lat, lng: loc.coords.lng } }
+        : {}),
+    };
+
     setSubmitting(true);
     try {
-      await onSubmit(result.data);
+      await onSubmit(payload);
     } finally {
       setSubmitting(false);
     }
@@ -228,6 +238,7 @@ export function AddressFormDialog({
   const isEditing = editingAddress !== null;
 
   return (
+    <>
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="max-w-md mx-4 rounded-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
@@ -247,7 +258,7 @@ export function AddressFormDialog({
             <Label className="text-gray-700">Save as</Label>
             <RadioGroup
               value={formData.label}
-              onValueChange={(v) => setField('label', v as AddressLabel)}
+              onValueChange={(v) => setField('label', v as ManualAddressLabel)}
               className="flex gap-3"
             >
               {LABEL_OPTIONS.map((opt) => {
@@ -281,20 +292,107 @@ export function AddressFormDialog({
             </RadioGroup>
           </div>
 
-          {/* Use current location */}
-          <button
-            type="button"
-            onClick={handleUseCurrentLocation}
-            disabled={locating}
-            className="flex items-center gap-2 text-sm font-medium text-brand-maroon-500 hover:text-brand-maroon-600 transition-colors min-h-[44px]"
-          >
-            {locating ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <Navigation className="w-4 h-4" />
+          {/* Use current location — canonical hook + radar pulse + typed
+              error pills. Aesthetic per Claude's frontend-design skill:
+              warm maroon→gold pin, brand-blush field, two-line copy. */}
+          <div className="space-y-2">
+            <button
+              type="button"
+              onClick={() => void loc.refresh()}
+              disabled={loc.status === 'fetching'}
+              className="flex w-full items-center gap-3 rounded-2xl border border-brand-maroon-200/60 bg-brand-blush/40 px-4 py-3 text-left transition-colors hover:bg-brand-blush/60 active:scale-[0.99] min-h-[56px] disabled:opacity-80"
+            >
+              {loc.status === 'fetching' ? (
+                <LocationPulse size="sm" ariaLabel="Detecting your location" />
+              ) : (
+                <div className="flex h-12 w-12 items-center justify-center rounded-full bg-gradient-to-br from-brand-maroon-500 to-brand-maroon-700 shadow-[0_4px_14px_rgba(136,14,79,0.25)] ring-1 ring-brand-gold-300/30">
+                  <MapPin className="h-5 w-5 text-white" aria-hidden />
+                </div>
+              )}
+              <span className="flex-1 min-w-0">
+                <span className="block text-[15px] font-medium text-stone-900">
+                  {loc.status === 'fetching'
+                    ? 'Detecting your location…'
+                    : loc.source === 'cache'
+                      ? 'Refresh location'
+                      : 'Use Current Location'}
+                </span>
+                <span className="block text-[13px] text-stone-500">
+                  {loc.status === 'fetching'
+                    ? "A moment — we're pinpointing your spot"
+                    : 'Fill the address from where you are right now'}
+                </span>
+              </span>
+            </button>
+
+            {/* Error pills — every state actionable, never silent. */}
+            {loc.error === 'permission-permanent' && (
+              <div
+                role="alert"
+                className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50/80 px-3 py-2 text-[13px] text-amber-900"
+              >
+                <MapPinOff className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+                <span className="flex-1">
+                  Location is turned off for this app.{' '}
+                  <button
+                    type="button"
+                    onClick={() => void loc.openSettings()}
+                    className="font-semibold underline"
+                  >
+                    Open Settings
+                  </button>{' '}
+                  to allow it, or type the address below.
+                </span>
+              </div>
             )}
-            {locating ? 'Detecting location...' : 'Use Current Location'}
-          </button>
+            {loc.error === 'permission-denied' && (
+              <div
+                role="alert"
+                className="flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50/80 px-3 py-2 text-[13px] text-rose-900"
+              >
+                <span className="flex-1">
+                  We need location permission to autofill.{' '}
+                  <button
+                    type="button"
+                    onClick={() => void loc.refresh()}
+                    className="font-semibold underline"
+                  >
+                    Try again
+                  </button>{' '}
+                  or type the address below.
+                </span>
+              </div>
+            )}
+            {(loc.error === 'service-down' ||
+              loc.error === 'quota' ||
+              loc.error === 'no-results' ||
+              loc.error === 'timeout' ||
+              loc.error === 'unknown') && (
+              <div
+                role="alert"
+                className="flex items-start gap-2 rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[13px] text-stone-700"
+              >
+                <span className="flex-1">
+                  {loc.error === 'quota'
+                    ? 'Too many requests right now. Try again in a minute or type below.'
+                    : loc.error === 'no-results'
+                      ? 'Could not resolve your address. Please type below.'
+                      : loc.error === 'service-down'
+                        ? 'Location service is paused. Please type below.'
+                        : loc.error === 'timeout'
+                          ? 'Location is taking too long. Try again or type below.'
+                          : 'Something went wrong. Try again or type below.'}{' '}
+                  <button
+                    type="button"
+                    onClick={() => void loc.refresh()}
+                    className="ml-1 font-semibold underline"
+                  >
+                    Try again
+                  </button>
+                </span>
+              </div>
+            )}
+          </div>
 
           {/* Name */}
           <FieldWrapper label="Full Name" error={errors.name}>
@@ -392,6 +490,12 @@ export function AddressFormDialog({
         </form>
       </DialogContent>
     </Dialog>
+    <LocationRationaleModal
+      open={loc.isRationaleOpen}
+      onAllow={loc.acknowledgeRationale}
+      onDeny={loc.dismissRationale}
+    />
+    </>
   );
 }
 

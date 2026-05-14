@@ -10,19 +10,29 @@ import { useBookingWizard } from '../../app/customer/book-new/_hooks/useBookingW
 
 describe('useBookingWizard', () => {
   it('starts at step 1 with empty selections', () => {
+    // 2026-05-13 (r2): step 1 is Home/Salon. The reducer default
+    // `bookingLocationKind: 'spa'` satisfies the canProceed gate on mount
+    // (the user can tap Next without touching anything — the salon is the
+    // implicit default location for a single-salon app).
     const { result } = renderHook(() => useBookingWizard());
     expect(result.current.state.step).toBe(1);
     expect(result.current.state.selectedSpa).toBeNull();
     expect(result.current.state.selectedServices).toEqual([]);
-    expect(result.current.canProceed).toBe(false);
+    expect(result.current.canProceed).toBe(true);
   });
 
-  it('SET_SPA on first call selects the spa and arms canProceed', () => {
+  it('SET_SPA stores the spa silently — step 1 is location, not spa/services', () => {
+    // 2026-05-13 (r2): wizard collapsed to 3 cart-driven steps. Step 1 is
+    // Home/Salon — services come pre-loaded from cart and spa is auto-set by
+    // the presenter, so neither SET_SPA nor TOGGLE_SERVICE affects step-1
+    // canProceed. The default `bookingLocationKind: 'spa'` already passes.
     const { result } = renderHook(() => useBookingWizard());
     act(() => {
       result.current.actions.setSpa({ id: 'spa-1', name: 'Test Spa' } as never);
     });
     expect(result.current.state.selectedSpa?.id).toBe('spa-1');
+    // Step 1 canProceed gates on location decided, which the initial
+    // 'spa' kind satisfies — adding services / spa is no longer required.
     expect(result.current.canProceed).toBe(true);
   });
 
@@ -92,15 +102,18 @@ describe('useBookingWizard', () => {
       bookingLocationKind: 'spa',
       customerLocation: null,
     });
-    expect(result.current.canProceed).toBe(false);
+    // Reset returns to step 1 (Home/Salon) with default `bookingLocationKind:
+    // 'spa'`, which satisfies canProceed — same invariant as initial mount.
+    expect(result.current.canProceed).toBe(true);
   });
 
-  it('NEXT_STEP / PREV_STEP clamps to [1, 5]', () => {
+  it('NEXT_STEP / PREV_STEP clamps to [1, 3]', () => {
+    // 2026-05-13 (r2): wizard now 3 cart-driven steps (Location → Time → Confirm).
     const { result } = renderHook(() => useBookingWizard());
     act(() => {
       for (let i = 0; i < 10; i++) result.current.actions.nextStep();
     });
-    expect(result.current.state.step).toBe(5);
+    expect(result.current.state.step).toBe(3);
     act(() => {
       for (let i = 0; i < 10; i++) result.current.actions.prevStep();
     });

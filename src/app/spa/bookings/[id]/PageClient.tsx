@@ -5,7 +5,7 @@ import { AlertCircle } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { ProtectedRoute } from '@/components/ProtectedRoute';
-import type { BookingCustomerLocation } from '@/lib/contracts';
+import type { BookingCustomerLocation } from '@/shared/contracts';
 import { useBookingRealtime } from '@/hooks/useBookings';
 import { useSpa } from '@/hooks/useSpas';
 import { SpaBookingDetailHeader } from '@/components/spa/booking/SpaBookingDetailHeader';
@@ -43,16 +43,12 @@ function SpaBookingDetailNotFound({ bookingId }: { bookingId: string }) {
             <AlertCircle className="w-7 h-7 text-amber-600" />
           </div>
           <div>
-            <h2 className="text-base font-semibold text-gray-900">
-              Booking not available
-            </h2>
+            <h2 className="text-base font-semibold text-gray-900">Booking not available</h2>
             <p className="text-sm text-gray-500 mt-1">
-              We couldn&apos;t load this booking. It may have been removed or
-              you may not have access.
+              We couldn&apos;t load this booking. It may have been removed or you may not have
+              access.
             </p>
-            <p className="text-xs text-gray-400 mt-2 tracking-wide">
-              ID: {bookingId}
-            </p>
+            <p className="text-xs text-gray-400 mt-2 tracking-wide">ID: {bookingId}</p>
           </div>
           <Link href="/spa/bookings" className="block">
             <Button className="w-full rounded-full h-11 bg-brand-maroon-500 hover:bg-brand-maroon-600 text-white">
@@ -97,11 +93,9 @@ function SpaBookingDetailContent({ bookingId }: { bookingId: string }) {
     bookingLocation?: 'spa' | 'home';
     customerLocation?: BookingCustomerLocation | null;
   } = {
-    bookingLocation: (booking as { bookingLocation?: 'spa' | 'home' })
-      .bookingLocation,
-    customerLocation: (
-      booking as { customerLocation?: BookingCustomerLocation | null }
-    ).customerLocation,
+    bookingLocation: (booking as { bookingLocation?: 'spa' | 'home' }).bookingLocation,
+    customerLocation: (booking as { customerLocation?: BookingCustomerLocation | null })
+      .customerLocation,
   };
 
   return (
@@ -115,10 +109,7 @@ function SpaBookingDetailContent({ bookingId }: { bookingId: string }) {
           customerPhone={booking.customer?.phone}
         />
         <SpaBookingServiceList services={booking.services ?? []} />
-        <SpaBookingNotesCard
-          notes={booking.notes}
-          specialRequests={booking.specialRequests}
-        />
+        <SpaBookingNotesCard notes={booking.notes} specialRequests={booking.specialRequests} />
         <SpaBookingStatusActions
           booking={{ id: booking.id, bookingStatus: booking.bookingStatus }}
         />

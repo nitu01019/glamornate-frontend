@@ -46,6 +46,10 @@ describe('ScheduleStep — past-slot filter (Patch DR-4)', () => {
       { start: '16:00', available: true },
     ];
 
+    // Slots are no longer fetched — the static every-30-min grid drives the
+    // UI. We still verify the past-slot filter behaviour, which is
+    // orthogonal to the data source.
+    void slots;
     render(
       React.createElement(ScheduleStep, {
         therapists: [],
@@ -58,8 +62,8 @@ describe('ScheduleStep — past-slot filter (Patch DR-4)', () => {
         selectedTime: null,
         onDateSelect: vi.fn(),
         onTimeSelect: vi.fn(),
-        slots,
-        slotsLoading: false,
+        onContinue: vi.fn(),
+        canProceed: false,
       }),
     );
 

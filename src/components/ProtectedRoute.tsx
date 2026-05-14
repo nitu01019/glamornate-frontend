@@ -21,7 +21,9 @@ const ROUTE_ROLE_MAP: Record<string, UserRole[]> = {
 };
 
 function getRolesForPath(pathname: string): UserRole[] | undefined {
-  const matched = Object.keys(ROUTE_ROLE_MAP).find((prefix) => pathname.startsWith(prefix));
+  const matched = Object.keys(ROUTE_ROLE_MAP).find(prefix =>
+    pathname.startsWith(prefix)
+  );
   return matched ? ROUTE_ROLE_MAP[matched] : undefined;
 }
 
@@ -51,26 +53,6 @@ interface ProtectedRouteProps {
   redirectTo?: string;
 }
 
-/**
- * ProtectedRoute — UI-level auth gate.
- *
- * NOTE: This is a defense-in-depth UI guard, NOT the security boundary.
- * Real authorization is enforced by:
- *   - Server-side Firestore Security Rules (see backend repo)
- *   - Cloud Function callables that verify the caller's ID token
- *     and check role/admin claims
- *   - Next.js middleware that token-presence-checks API routes
- *
- * This component prevents UI flicker (rendering admin chrome before
- * the redirect kicks in) and provides a clean UX for unauthenticated
- * users hitting protected routes. It does NOT prevent a determined
- * attacker from inspecting the bundled JS, which is unavoidable for
- * any client-rendered Next.js app.
- *
- * For production hardening, the recommended next step is converting
- * admin/spa/customer layouts to Server Components that gate via
- * `cookies()` + `verifySessionCookie`. See `docs/REPO_TOPOLOGY.md`.
- */
 export function ProtectedRoute({
   children,
   requiredRoles,
@@ -110,7 +92,15 @@ export function ProtectedRoute({
         router.replace(ROLE_DASHBOARDS[user.role] || '/');
       }
     }
-  }, [isAuthenticated, isLoading, user, effectiveRoles, router, redirectTo, pathname]);
+  }, [
+    isAuthenticated,
+    isLoading,
+    user,
+    effectiveRoles,
+    router,
+    redirectTo,
+    pathname,
+  ]);
 
   // Show skeleton loading state — but cap it with a timeout fallback
   if (isLoading) {

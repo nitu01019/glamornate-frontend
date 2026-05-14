@@ -48,7 +48,7 @@ import type { Spa, Booking, Review, Therapist, User } from '@/types';
  * will be removed after all hooks have been migrated.
  */
 export { apiClient };
-export type { ApiResponse } from '@/lib/contracts';
+export type { ApiResponse } from '@/shared/contracts';
 export type { ApiRequestOptions } from '@/lib/api-client';
 
 /**
@@ -64,14 +64,14 @@ export function useApiClient() {
     () => ({
       client: apiClient,
       isAuthenticated: !!firebaseUser,
-      get: <T,>(path: string, options?: ApiClientRequestOptions) => apiClient.get<T>(path, options),
-      post: <T,>(path: string, body?: unknown, options?: ApiClientRequestOptions) =>
+      get: <T>(path: string, options?: ApiClientRequestOptions) => apiClient.get<T>(path, options),
+      post: <T>(path: string, body?: unknown, options?: ApiClientRequestOptions) =>
         apiClient.post<T>(path, body, options),
-      put: <T,>(path: string, body?: unknown, options?: ApiClientRequestOptions) =>
+      put: <T>(path: string, body?: unknown, options?: ApiClientRequestOptions) =>
         apiClient.put<T>(path, body, options),
-      patch: <T,>(path: string, body?: unknown, options?: ApiClientRequestOptions) =>
+      patch: <T>(path: string, body?: unknown, options?: ApiClientRequestOptions) =>
         apiClient.patch<T>(path, body, options),
-      delete: <T,>(path: string, options?: ApiClientRequestOptions) =>
+      delete: <T>(path: string, options?: ApiClientRequestOptions) =>
         apiClient.delete<T>(path, options),
     }),
     [firebaseUser],

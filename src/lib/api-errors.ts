@@ -7,6 +7,7 @@
  * React Query `onError` handlers and UI error boundaries can branch on a
  * consistent structure.
  */
+import type { AuthErrorCodeT } from '@/auth/error-codes';
 
 /**
  * Typed error thrown by `apiClient` for every non-successful API response.
@@ -54,7 +55,8 @@ export class ApiError extends Error {
 
   /** Convenience: true when the response indicates an expired Firebase id token. */
   get isTokenExpired(): boolean {
-    return this.status === 401 && this.code === 'token-expired';
+    const EXPIRED: AuthErrorCodeT = 'token-expired';
+    return this.status === 401 && this.code === EXPIRED;
   }
 
   /** Convenience: true when the server aborted due to client-side timeout. */

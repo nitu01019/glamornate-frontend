@@ -9,7 +9,7 @@
  *   - C (local-only): no contract exists yet; keep local and log as candidate
  *       for contracts-package expansion.
  *
- * Reconciliation ledger: <internal-debug-notes>
+ * Reconciliation ledger: /Users/nitishbhardwaj/Desktop/Glamornate/docs/remediation/A2-RECONCILIATION.md
  */
 
 // --- Category A (adopted from @glamornate/contracts) ---
@@ -41,7 +41,7 @@ import type {
   Verification,
   Statistics,
   SEO,
-} from '@/lib/contracts';
+} from '@/shared/contracts';
 export type {
   SpaCategory,
   DiscountType,
@@ -668,7 +668,37 @@ export interface ChatThread {
 }
 
 // === Address Book Types ===
-export type AddressLabel = 'home' | 'work' | 'other';
+// `'detected'` is auto-only — written by HomeLocationSheet's GPS path when
+// the user taps "Use current location". UI surfaces hide it from the
+// manual-form label-chip group; HomeLocationSheet keeps at most one
+// 'detected' entry at a time (auto-prune on each new GPS fix).
+export type AddressLabel = 'home' | 'work' | 'other' | 'detected';
+
+/**
+ * The set of address labels a user can pick in the manual address form.
+ * Excludes `'detected'` which is reserved for GPS auto-save.
+ */
+export const MANUAL_ADDRESS_LABELS = [
+  'home',
+  'work',
+  'other',
+] as const satisfies readonly AddressLabel[];
+export type ManualAddressLabel = (typeof MANUAL_ADDRESS_LABELS)[number];
+
+/**
+ * Reserved sentinel values written by the home-sheet GPS auto-save flow
+ * when (a) the auth user has no `phoneNumber` on file or (b) reverse-
+ * geocode didn't return a pincode. The backend Zod schema rejects any
+ * non-`'detected'` address that carries these, and rejects any patch that
+ * sets them — frontend code that decides whether to render the literal
+ * digits or a friendlier "GPS detected · tap edit to label this Home or
+ * Work" line should compare against these constants, not magic strings.
+ *
+ * Must stay in lock-step with the backend constants in
+ * `backend/functions/src/utils/addresses.ts`.
+ */
+export const DETECTED_PHONE_SENTINEL = '0000000';
+export const DETECTED_PINCODE_SENTINEL = '000000';
 
 export interface SavedAddress {
   id: string;
@@ -684,4 +714,9 @@ export interface SavedAddress {
   isDefault: boolean;
   createdAt: string;
   updatedAt: string;
+  // Optional GPS coords captured at save time (v3 — location unification).
+  // When present, booking flows skip the client-side reverse-geocode and
+  // mount the map directly on these coords. Legacy addresses without geo
+  // fall through to the lazy useAddressGeocoder path.
+  geo?: { lat: number; lng: number; accuracy?: number };
 }

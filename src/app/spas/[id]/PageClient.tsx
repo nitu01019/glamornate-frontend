@@ -83,10 +83,17 @@ function ServiceCard({
   // Phase 6: "Add" now adds to the global cart and opens the drawer instead of
   // navigating to the booking flow. This keeps the user on the spa page so
   // they can stack multiple services into a single booking.
+  //
+  // Phase 7 (2026-05-13): we push the underlying catalog `Service.id` rather
+  // than the SpaService doc id so cart.serviceId is consistent with every
+  // other entry point (home, hero carousels, catalog grids). The backend's
+  // SERVICE_NOT_OFFERED_BY_SPA precondition (createBooking.ts) joins
+  // `spa_services/{spaId}_{serviceId}` on the catalog id, so this MUST be
+  // the catalog id, not the per-spa doc id.
   const addItem = useCartStore((s) => s.addItem);
   const handleAdd = () => {
     addItem({
-      serviceId: service.id,
+      serviceId: service.service?.id ?? service.id,
       serviceName: name,
       categoryName: service.service?.category ?? '',
       subcategory: '',

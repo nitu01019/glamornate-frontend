@@ -100,8 +100,11 @@ bash "${SCRIPT_DIR}/build-mobile.sh"
 if [[ ! -f "out/customer/bookings/index.html" ]]; then
   echo "[build] FAIL: out/customer/bookings missing" && exit 2
 fi
-if [[ ! -d "out/customer/bookings/[id]" ]]; then
-  echo "[build] FAIL: out/customer/bookings/[id] missing" && exit 2
+# Next 15+ emits the dynamic `[id]` route under `_/` in the filesystem instead
+# of `[id]/`. Accept either form so the verify keeps catching real drops without
+# false-alarming on the new export layout.
+if [[ ! -d "out/customer/bookings/[id]" && ! -d "out/customer/bookings/_" ]]; then
+  echo "[build] FAIL: out/customer/bookings/[id] (or _) missing" && exit 2
 fi
 # Account-linking flow (booking-flow-fix v3.1) — fails closed if the static
 # export silently dropped the route (Gap 3).

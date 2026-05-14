@@ -41,6 +41,8 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { Eye, EyeOff, Loader2, ShieldCheck, X } from 'lucide-react';
 import { EmailAuthProvider, reauthenticateWithCredential, updatePassword } from 'firebase/auth';
+import { getFunctions, httpsCallable } from 'firebase/functions';
+import { getFirebaseApp } from '@/lib/firebase-client';
 import { useAuth } from '@/lib/auth-provider';
 import { useToastActions } from '@/lib/providers';
 import { mapAuthError, type MappedAuthError } from '@/lib/account/auth-error-map';
@@ -177,8 +179,29 @@ export function ChangePasswordSheet({ open, onClose }: ChangePasswordSheetProps)
         const credential = EmailAuthProvider.credential(firebaseUser.email, values.currentPassword);
         await reauthenticateWithCredential(firebaseUser, credential);
         await updatePassword(firebaseUser, values.newPassword);
+        // 2026-05-11 (Cipher-D1 / Beacon-D07 / T3-F5): revoke all other
+        // sessions immediately after password change. OWASP ASVS V3.3.1
+        // / V3.6.1 requires all OTHER active sessions to be invalidated
+        // when a user changes their password. Best-effort: failure here
+        // does NOT block the password-change success flow — the local
+        // session's token will still be refreshed below.
+        try {
+          const functions = getFunctions(getFirebaseApp(), 'us-central1');
+          const callable = httpsCallable<unknown, { success: boolean }>(
+            functions,
+            'revokeMySessions',
+          );
+          await callable();
+          log.info('Password change: other sessions revoked');
+        } catch (revokeErr) {
+          log.warn('Password change: revokeMySessions failed (non-blocking)', {
+            err: revokeErr instanceof Error ? revokeErr.message : String(revokeErr),
+          });
+        }
         // Force a token refresh so subsequent Firestore writes see the
-        // new credentials (R5 risk in PHASE_3.md).
+        // new credentials (R5 risk in PHASE_3.md). After revoke above,
+        // this also mints a fresh token for the CURRENT device — the
+        // device that just changed the password keeps working.
         await firebaseUser.getIdToken(true);
 
         toast.success('Password updated', 'Your password has been changed successfully.');

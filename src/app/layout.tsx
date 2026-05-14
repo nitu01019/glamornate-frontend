@@ -75,6 +75,27 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       // scrolling on RSC navigations and emits a deprecation warning.
       data-scroll-behavior="smooth"
     >
+      <head>
+        {/* Warm up the TCP/TLS handshakes to:
+              - Google Maps tile + JS SDK origins so the booking-flow map
+                renders ~150 ms faster on the user's first visit;
+              - the Firebase Functions callable origin (us-central1) so the
+                `reverseGeocode` round-trip on the home-screen GPS tap
+                saves the DNS+TLS hop. Red-team T-B2 flagged that the
+                original preconnect block warmed only Maps, not the
+                actual callable endpoint that the GPS path hits.
+            Safe to include globally — the browser drops unused preconnects
+            after a few seconds with zero side-effect. */}
+        <link rel="preconnect" href="https://maps.googleapis.com" crossOrigin="anonymous" />
+        <link rel="preconnect" href="https://maps.gstatic.com" crossOrigin="anonymous" />
+        <link
+          rel="preconnect"
+          href="https://us-central1-glamornate-prod.cloudfunctions.net"
+          crossOrigin="anonymous"
+        />
+        <link rel="dns-prefetch" href="https://maps.googleapis.com" />
+        <link rel="dns-prefetch" href="https://us-central1-glamornate-prod.cloudfunctions.net" />
+      </head>
       <body className="font-sans antialiased bg-white text-gray-900 min-h-screen">
         {/* Portrait lock overlay — CSS @media (orientation: landscape) overrides display to flex */}
         <div id="portrait-lock-overlay" style={{ display: 'none' }} aria-hidden="true">

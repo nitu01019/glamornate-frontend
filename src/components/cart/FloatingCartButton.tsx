@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { usePathname } from 'next/navigation';
 import { ShoppingBag } from 'lucide-react';
 import { useCartStore } from '@/store/cart';
 
@@ -10,6 +11,7 @@ export default function FloatingCartButton() {
   // and keeps the user in context of whatever page they were on.
   const openCart = useCartStore((state) => state.openCart);
   const storeItemCount = useCartStore((state) => state.getItemCount());
+  const pathname = usePathname();
   const [shouldBounce, setShouldBounce] = useState(false);
   const previousCountRef = useRef(0);
 
@@ -34,6 +36,12 @@ export default function FloatingCartButton() {
     previousCountRef.current = itemCount;
   }, [itemCount]);
 
+  // Hide the redundant floating pill when the user is already on the cart
+  // page — the page itself has the proceed-to-book CTA in view.
+  if (pathname === '/cart') {
+    return null;
+  }
+
   if (itemCount === 0) {
     return null;
   }
@@ -41,7 +49,12 @@ export default function FloatingCartButton() {
   return (
     <button
       onClick={openCart}
-      className={`fixed bottom-24 right-4 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-brand-green-600 text-white shadow-float-btn transition-all hover:bg-brand-green-700 active:scale-95 ${
+      // bottom uses `calc(5rem + safe-area-inset)` so the FAB clears both
+      // the h-16 bottom nav AND the iOS home-indicator (24-34 px). Plain
+      // bottom-24 (96 px) collided with the nav's lower strip on iPhone
+      // 14/15 — red-team T-B1 finding.
+      style={{ bottom: `calc(5rem + env(safe-area-inset-bottom, 0px))` }}
+      className={`fixed right-4 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-brand-green-600 text-white shadow-float-btn transition-all hover:bg-brand-green-700 active:scale-95 ${
         shouldBounce ? 'animate-bounce' : ''
       }`}
       aria-label={`View cart with ${itemCount} item${itemCount === 1 ? '' : 's'}`}

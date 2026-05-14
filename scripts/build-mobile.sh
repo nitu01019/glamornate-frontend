@@ -20,7 +20,7 @@ for f in "${FILES_TO_MOVE[@]}"; do [[ -f "$f" ]] && mv "$f" "${f}.bak"; done
 # Probe the configured API URL before committing to a 90-second build.
 # A wrong-region or wrong-path URL would otherwise silently ship in the APK and
 # surface as "Network request failed" toasts on every REST call (see
-# <internal-debug-notes>).
+# /Users/nitishbhardwaj/.claude/plans/apk-network-request-failed-systematic-debug.md).
 bash "$(dirname "$0")/verify-mobile-env.sh" .env.mobile
 
 cp .env.mobile .env.production

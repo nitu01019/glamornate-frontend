@@ -1,20 +1,23 @@
+import * as Sentry from '@sentry/nextjs';
 import { initializeApp, getApps, FirebaseApp, FirebaseOptions } from 'firebase/app';
 // Namespace import for firebase/auth so the `User` export does not collide
 // with our domain `User` type. Avoids an import-rename `as X` which the F3
 // sweep bans.
 import * as firebaseAuth from 'firebase/auth';
+// H5/V-16/O10 (2026-05-11): createUserWithEmailAndPassword, signInWithPopup,
+// GoogleAuthProvider, sendPasswordResetEmail dropped from this destructure —
+// the corresponding authService.signUp/signInWithGoogle/resetPassword were
+// deleted in the Patch 18 sweep (zero callers; real impl is in auth-provider).
+// Keeping the unused destructures triggered @typescript-eslint/no-unused-vars
+// and blocked `next build` (Draco APK build report, 2026-05-11).
 const {
   getAuth,
   setPersistence,
   indexedDBLocalPersistence,
   signInWithEmailAndPassword,
-  createUserWithEmailAndPassword,
-  signInWithPopup,
-  GoogleAuthProvider,
   signInWithPhoneNumber,
   onAuthStateChanged,
   signOut: firebaseSignOut,
-  sendPasswordResetEmail,
   updatePassword,
   updateProfile,
   linkWithCredential,
@@ -59,7 +62,8 @@ type DocumentData = firestoreSdk.DocumentData;
 // converter helpers in `parsers.ts` produce identity-typed refs (DbModel = T)
 // — Firebase's own type defaults handle the structural compat at call sites.
 type Query<T extends DocumentData = DocumentData> = firestoreSdk.Query<T>;
-type CollectionReference<T extends DocumentData = DocumentData> = firestoreSdk.CollectionReference<T>;
+type CollectionReference<T extends DocumentData = DocumentData> =
+  firestoreSdk.CollectionReference<T>;
 type DocumentReference<T extends DocumentData = DocumentData> = firestoreSdk.DocumentReference<T>;
 type WriteBatch = firestoreSdk.WriteBatch;
 type FirestoreTransaction = firestoreSdk.Transaction;
@@ -130,14 +134,29 @@ let persistenceConfigured = false;
  */
 function ensureAuthPersistence(auth: Auth): void {
   if (persistenceConfigured) return;
-  persistenceConfigured = true;
-  void setPersistence(auth, indexedDBLocalPersistence).catch((err) => {
-    // eslint-disable-next-line no-console -- one-line warn during init; not in hot path
-    console.warn(
-      '[firebase] setPersistence(indexedDBLocalPersistence) failed; auth session may not survive cold start',
-      err,
-    );
-  });
+  // M-F4 (2026-05-11): only flag as configured ONCE the promise resolves.
+  // Setting eagerly used to hide a silent in-memory fallback from telemetry
+  // — when setPersistence rejected (Capacitor WebView IDB blocked, quota
+  // exhaustion), the user's session evaporated on cold start with no
+  // observable signal. The Sentry breadcrumb on reject surfaces the actual
+  // rate. The window between first caller and resolve allows one more
+  // setPersistence call from a concurrent getFirebaseAuth() invocation;
+  // Firebase SDK treats redundant setPersistence as idempotent.
+  void setPersistence(auth, indexedDBLocalPersistence)
+    .then(() => {
+      persistenceConfigured = true;
+    })
+    .catch((err) => {
+      // eslint-disable-next-line no-console -- one-line warn during init; not in hot path
+      console.warn(
+        '[firebase] setPersistence(indexedDBLocalPersistence) failed; auth session may not survive cold start',
+        err,
+      );
+      Sentry.captureMessage('auth.persistence.fallback', {
+        level: 'warning',
+        extra: { err: err instanceof Error ? err.message : String(err) },
+      });
+    });
 }
 
 export const initializeFirebase = (config?: FirebaseOptions): FirebaseApp => {
@@ -170,7 +189,14 @@ export const getFirebaseApp = (): FirebaseApp => {
       if (firebaseConfig.isConfigured()) {
         firebaseApp = initializeApp(firebaseConfig.getFirebaseOptions());
       } else {
-        throw new Error('Firebase not configured. Check environment variables.');
+        // 2026-05-12 (Hunt-D1): include the specific missing keys in the
+        // error message. Surfaces in Sentry breadcrumbs and console.error so
+        // build-time env-var injection failures are diagnosable from a
+        // single log line instead of requiring local repro.
+        const missing = firebaseConfig.getMissingKeys().join(', ') || '(unknown)';
+        throw new Error(
+          `Firebase not configured (missing: ${missing}). Check NEXT_PUBLIC_FIREBASE_* env vars are present at build time.`,
+        );
       }
     }
     authInstance = getAuth(firebaseApp);
@@ -259,25 +285,10 @@ export const authService = {
     return await user.getIdToken(forceRefresh);
   },
 
-  // Email/Password Sign Up
-  signUp: async (data: SignUpData): Promise<AuthResult> => {
-    try {
-      const userCredential = await createUserWithEmailAndPassword(
-        getFirebaseAuth(),
-        data.email,
-        data.password,
-      );
-
-      await updateProfile(userCredential.user, {
-        displayName: data.displayName,
-      });
-
-      return { user: userCredential.user };
-    } catch (error: unknown) {
-      const err = toFirebaseErrorShape(error);
-      return { user: null, error: handleAuthError(err) };
-    }
-  },
+  // H5/O10 (2026-05-11): authService.signUp deleted — zero callers; real
+  // signup is handled by auth-provider.tsx::signUp via the Firebase SDK
+  // directly (with profile creation + email verification + listener race
+  // protection). The dead duplicate was missing all of those.
 
   // Email/Password Sign In
   signIn: async (data: SignInData): Promise<AuthResult> => {
@@ -294,18 +305,11 @@ export const authService = {
     }
   },
 
-  // Google Sign In
-  signInWithGoogle: async (): Promise<AuthResult> => {
-    try {
-      const provider = new GoogleAuthProvider();
-      provider.setCustomParameters({ prompt: 'select_account' });
-      const userCredential = await signInWithPopup(getFirebaseAuth(), provider);
-      return { user: userCredential.user };
-    } catch (error: unknown) {
-      const err = toFirebaseErrorShape(error);
-      return { user: null, error: handleAuthError(err) };
-    }
-  },
+  // H5 (2026-05-11): authService.signInWithGoogle deleted — zero callers;
+  // real Google sign-in is handled by auth-provider.tsx::signInWithGoogle
+  // with Capacitor native + web-popup paths, cross-provider conflict
+  // recovery, and listener race protection. The dead duplicate had none of
+  // those.
 
   // Phone Sign In - Step 1: Send OTP
   sendPhoneOTP: async (
@@ -350,16 +354,9 @@ export const authService = {
     }
   },
 
-  // Reset Password
-  resetPassword: async (email: string): Promise<{ error?: AuthError }> => {
-    try {
-      await sendPasswordResetEmail(getFirebaseAuth(), email);
-      return {};
-    } catch (error: unknown) {
-      const err = toFirebaseErrorShape(error);
-      return { error: handleAuthError(err) };
-    }
-  },
+  // V-16 (2026-05-11): authService.resetPassword deleted — zero callers;
+  // real reset is handled by auth-provider.tsx::resetPassword with
+  // enumeration-safe silent swallow of auth/user-not-found.
 
   // Update Password
   updatePassword: async (newPassword: string): Promise<{ error?: AuthError }> => {
@@ -477,8 +474,7 @@ export const collections = {
   vouchers: () => typedCollection<Voucher>(getFirebaseFirestore(), 'vouchers'),
   userVouchers: () => typedCollection<UserVoucher>(getFirebaseFirestore(), 'user_vouchers'),
   wallets: () => typedCollection<Wallet>(getFirebaseFirestore(), 'wallets'),
-  supportTickets: () =>
-    typedCollection<SupportTicket>(getFirebaseFirestore(), 'support_tickets'),
+  supportTickets: () => typedCollection<SupportTicket>(getFirebaseFirestore(), 'support_tickets'),
   analytics: () => typedCollection<Analytics>(getFirebaseFirestore(), 'analytics'),
   flags: () => typedCollection<FeatureFlag>(getFirebaseFirestore(), 'flags'),
   auditLogs: () => typedCollection<AuditLog>(getFirebaseFirestore(), 'audit_logs'),
@@ -494,8 +490,7 @@ export const documents = {
     typedDoc<SpaService>(getFirebaseFirestore(), 'spa_services', compositeId),
   therapist: (therapistId: string) =>
     typedDoc<Therapist>(getFirebaseFirestore(), 'therapists', therapistId),
-  booking: (bookingId: string) =>
-    typedDoc<Booking>(getFirebaseFirestore(), 'bookings', bookingId),
+  booking: (bookingId: string) => typedDoc<Booking>(getFirebaseFirestore(), 'bookings', bookingId),
   review: (reviewId: string) => typedDoc<Review>(getFirebaseFirestore(), 'reviews', reviewId),
   availability: (compositeId: string) =>
     typedDoc<Availability>(getFirebaseFirestore(), 'availability', compositeId),
@@ -1598,13 +1593,6 @@ export const auditLogService = {
 export * from '@/types';
 
 // Re-export domain-specific helpers from dedicated modules
-export {
-  createBooking as createBookingRecord,
-  getUserBookings as getUserBookingRecords,
-  getBookingById as getBookingRecordById,
-  getBookingsForDate,
-  updateBookingStatus as updateBookingRecordStatus,
-} from './bookings';
 
 export {
   getOrCreateChat,

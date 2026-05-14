@@ -180,8 +180,11 @@ function createQueryClient(showErrorToast: (error: AppError) => void): QueryClie
           mutationKey: mutation.options.mutationKey,
         });
 
-        // Show toast for mutation errors (unless handled locally)
-        if (!mutation.meta?.skipErrorToast) {
+        // β8 fix (2026-05-12): mirror queryCache.onError's auth guard at L169.
+        // Auth errors are surfaced by AuthProvider / token-revoke seam (banner
+        // on /auth/login). Toasting them here doubles the messaging and can
+        // toast over the login page during a mid-flow session expiry.
+        if (!mutation.meta?.skipErrorToast && !isAuthError(error)) {
           showErrorToast(appError);
         }
       },

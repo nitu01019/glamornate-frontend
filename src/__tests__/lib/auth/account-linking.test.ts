@@ -5,10 +5,7 @@
  * the two paths that ship customer-visible behaviour.
  */
 import { describe, it, expect } from 'vitest';
-import {
-  detectUnlinkedAccounts,
-  resolveLinkConflict,
-} from '../../../lib/auth/account-linking';
+import { detectUnlinkedAccounts, resolveLinkConflict } from '../../../auth/account-linking';
 
 describe('detectUnlinkedAccounts', () => {
   it('returns true for the canonical zero-bookings + email + phone case', () => {

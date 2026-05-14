@@ -1,8 +1,9 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { Search, Navigation, X, Loader2, MapPin } from 'lucide-react';
 import { useLocation } from '@/lib/location-provider';
+import { useCurrentLocation } from '@/lib/location/hooks/useCurrentLocation';
 
 // =============================================================================
 // Types
@@ -29,11 +30,11 @@ interface LocationPickerProps {
 // =============================================================================
 
 const POPULAR_CITIES: readonly PopularCity[] = [
-  { lat: 32.7266, lng: 74.8570, city: 'Jammu', area: 'Jammu' },
-  { lat: 28.6139, lng: 77.2090, city: 'Delhi', area: 'New Delhi' },
-  { lat: 19.0760, lng: 72.8777, city: 'Mumbai', area: 'Mumbai' },
+  { lat: 32.7266, lng: 74.857, city: 'Jammu', area: 'Jammu' },
+  { lat: 28.6139, lng: 77.209, city: 'Delhi', area: 'New Delhi' },
+  { lat: 19.076, lng: 72.8777, city: 'Mumbai', area: 'Mumbai' },
   { lat: 12.9716, lng: 77.5946, city: 'Bangalore', area: 'Bangalore' },
-  { lat: 17.3850, lng: 78.4867, city: 'Hyderabad', area: 'Hyderabad' },
+  { lat: 17.385, lng: 78.4867, city: 'Hyderabad', area: 'Hyderabad' },
   { lat: 13.0827, lng: 80.2707, city: 'Chennai', area: 'Chennai' },
   { lat: 22.5726, lng: 88.3639, city: 'Kolkata', area: 'Kolkata' },
   { lat: 18.5204, lng: 73.8567, city: 'Pune', area: 'Pune' },
@@ -44,10 +45,33 @@ const POPULAR_CITIES: readonly PopularCity[] = [
 // =============================================================================
 
 export default function LocationPicker({ isOpen, onClose }: LocationPickerProps) {
-  const { location, isLoading, error, setLocation, detectLocation } = useLocation();
+  const { location, setLocation } = useLocation();
+  const loc = useCurrentLocation();
   const [searchQuery, setSearchQuery] = useState('');
   const [isAnimating, setIsAnimating] = useState(false);
+  const [hasFiredDetect, setHasFiredDetect] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  const isLoading = loc.status === 'fetching';
+  const errorMessage = useMemo<string | null>(() => {
+    if (!loc.error) return null;
+    switch (loc.error) {
+      case 'permission-permanent':
+        return 'Location is turned off for this app. Open Settings to allow.';
+      case 'permission-denied':
+        return 'Location permission denied. Tap again or pick a city.';
+      case 'quota':
+        return 'Too many requests — try again in a minute.';
+      case 'service-down':
+        return 'Location service is paused. Pick a city below.';
+      case 'no-results':
+        return 'Could not resolve your address.';
+      case 'timeout':
+        return 'Location is taking too long. Try again.';
+      default:
+        return 'Could not detect your location.';
+    }
+  }, [loc.error]);
 
   // Handle open/close animation
   useEffect(() => {
@@ -91,9 +115,10 @@ export default function LocationPicker({ isOpen, onClose }: LocationPickerProps)
     return () => window.removeEventListener('glamornate:back-button', handler);
   }, [isOpen, onClose]);
 
-  const filteredCities = POPULAR_CITIES.filter((city) =>
-    city.city.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    city.area.toLowerCase().includes(searchQuery.toLowerCase())
+  const filteredCities = POPULAR_CITIES.filter(
+    (city) =>
+      city.city.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      city.area.toLowerCase().includes(searchQuery.toLowerCase()),
   );
 
   function handleSelectCity(city: PopularCity): void {
@@ -108,19 +133,28 @@ export default function LocationPicker({ isOpen, onClose }: LocationPickerProps)
   }
 
   async function handleDetectLocation(): Promise<void> {
-    await detectLocation();
-    // Close picker after successful detection (error stays visible)
-    // We check after the async call completes
+    setHasFiredDetect(true);
+    await loc.refresh();
   }
 
-  // Close on successful detection
+  // Mirror a successful GPS+geocode result into the legacy location provider
+  // so marketplace consumers (spas-by-city, MostBookedSection, LocationHeader)
+  // re-render with the new locale, then close the picker. Guarded by
+  // `hasFiredDetect` so the picker doesn't auto-close on a cache-hit that
+  // hydrated useCurrentLocation before the user tapped "Use current location".
   useEffect(() => {
-    if (!isLoading && location && !error) {
-      // If location was just detected and no error, close might be desired
-      // But we only auto-close when detectLocation was called from this picker
-      // For now, let detectLocation set location and user sees it applied
-    }
-  }, [isLoading, location, error]);
+    if (!hasFiredDetect) return;
+    if (loc.status !== 'success' || !loc.coords || !loc.address) return;
+    setLocation({
+      lat: loc.coords.lat,
+      lng: loc.coords.lng,
+      city: loc.address.city ?? 'Detected',
+      area: loc.address.line1 ?? loc.address.city ?? 'Current location',
+      fullAddress: loc.address.formatted,
+    });
+    setHasFiredDetect(false);
+    onClose();
+  }, [hasFiredDetect, loc.status, loc.coords, loc.address, setLocation, onClose]);
 
   if (!isOpen && !isAnimating) {
     return null;
@@ -191,9 +225,7 @@ export default function LocationPicker({ isOpen, onClose }: LocationPickerProps)
               <span className="text-sm font-medium text-brand-maroon-700">
                 {isLoading ? 'Detecting location...' : 'Use current location'}
               </span>
-              {error && (
-                <p className="text-xs text-red-500 mt-0.5">{error}</p>
-              )}
+              {errorMessage && <p className="text-xs text-red-500 mt-0.5">{errorMessage}</p>}
             </div>
           </button>
         </div>

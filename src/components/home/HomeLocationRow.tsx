@@ -5,6 +5,7 @@ import dynamic from 'next/dynamic';
 import { ChevronDown, MapPin } from 'lucide-react';
 import { useLocation } from '@/lib/location-provider';
 import { useDefaultAddress } from '@/hooks/useDefaultAddress';
+import { usePreWarmLocation } from '@/lib/location/hooks/usePreWarmLocation';
 import type { SavedAddress } from '@/types';
 import { cn } from '@/lib/utils';
 
@@ -71,6 +72,13 @@ function pickPrimaryLine(args: {
 export default function HomeLocationRow() {
   const { address, isLoading: addressLoading } = useDefaultAddress();
   const { location } = useLocation();
+
+  // Opportunistic pre-warm: if the user has already granted location
+  // permission, fire the canonical GPS+geocode pipeline in the background
+  // on mount so by the time they tap the bar the cache already has a
+  // fresh fix. No-op when permission is not granted yet — never triggers
+  // an OS prompt. See usePreWarmLocation for the closed-loop guards.
+  usePreWarmLocation();
 
   // Defer any client-only state to prevent SSR hydration mismatch.
   const [hasMounted, setHasMounted] = useState(false);

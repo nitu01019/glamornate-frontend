@@ -76,10 +76,17 @@ function ForgotPasswordForm() {
     setIsSubmitting(true);
 
     try {
-      await resetPassword(email);
+      // 2026-05-11 (Cinder-D15 / F58): trim email — mobile keyboards
+      // append a trailing space on autocomplete (matches the A-3-11
+      // pattern in login + register pages).
+      await resetPassword(email.trim());
       setSuccess(true);
     } catch (err: unknown) {
-      Sentry.addBreadcrumb({ category: 'auth_ui', message: 'auth_error_displayed', data: { page: 'forgot-password' } });
+      Sentry.addBreadcrumb({
+        category: 'auth_ui',
+        message: 'auth_error_displayed',
+        data: { page: 'forgot-password' },
+      });
       setError(getUserFriendlyMessage(err));
     } finally {
       setIsSubmitting(false);
@@ -141,8 +148,8 @@ function ForgotPasswordForm() {
               <div className="flex items-start gap-3 rounded-2xl bg-green-50 border border-green-200 p-4">
                 <CheckCircle className="mt-0.5 h-5 w-5 flex-shrink-0 text-green-500" />
                 <p className="text-sm text-green-700">
-                  Reset link sent to your email. Check your inbox and follow the link to reset your
-                  password.
+                  If an account exists with this email, a reset link has been sent. Check your inbox
+                  and follow the link to reset your password.
                 </p>
               </div>
               <Link

@@ -1,20 +1,25 @@
 /**
- * Phase 5 (Booking Flow Fix v3.1, 2026-05-02): regression tests pinning the
- * single-mutation submission flow. Two cases cover the success and failure
- * branches that the wizard's "Confirm" button surfaces:
+ * Regression tests for `useBookingSubmission`.
  *
- *   1. Successful mutateAsync → onSuccess(bookingId) is called.
- *   2. Rejected mutateAsync → `error` state is set, wizard state is NOT
- *      reset, onSuccess is NOT called.
+ * Phase 6 (Booking Flow Fix v3.1, 2026-05-13) rewired the hook to read
+ * service name/price/duration directly from cart items instead of joining
+ * against `useSpaServices`. The legacy join broke when the cart's catalog
+ * Service.id did not match any per-spa subcollection doc id — every lookup
+ * returned undefined and the confirm screen rendered ₹0.
  *
- * The legacy submission ran a four-step Stripe pipeline; collapsing it into
- * a single mutation means a single test point and a single failure mode.
+ * Test cases:
+ *   1. Successful mutateAsync → onSuccess(bookingId) is called, and the
+ *      payload's `services[]` reflects cart name/price/duration verbatim.
+ *   2. Rejected mutateAsync → `error` state is set, onSuccess is NOT called.
+ *   3. Empty cart → silent-bail eliminated: hook sets a user-visible error
+ *      ("Please complete every step before confirming.") instead of
+ *      returning silently.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, act, waitFor } from '@testing-library/react';
 
 // ---------------------------------------------------------------------------
-// Mocks: useCreateBooking — the central spy. We control mutateAsync per test.
+// Mocks
 // ---------------------------------------------------------------------------
 
 const mutateAsyncSpy = vi.fn();
@@ -27,7 +32,6 @@ vi.mock('@/hooks/useBookings', () => ({
   }),
 }));
 
-// auth-provider — the hook reads `user` for the customer name/phone.
 vi.mock('@/lib/auth-provider', () => ({
   useAuth: () => ({
     user: { profile: { displayName: 'Tester', phone: '+919999999999' } },
@@ -35,19 +39,10 @@ vi.mock('@/lib/auth-provider', () => ({
   }),
 }));
 
-// useServices — submission reads spaServices to compute totals.
-vi.mock('@/hooks/useServices', () => ({
-  useSpaServices: () => ({
-    data: [
-      {
-        id: 'svc-1',
-        customName: 'Service One',
-        priceOverride: 1000,
-        durationOverride: 60,
-        service: { name: 'Service One', basePrice: 1000, baseDuration: 60 },
-      },
-    ],
-  }),
+// useActiveSpa — the hook now resolves the spa directly (Phase 7 single-salon
+// refactor). Always returns the seeded Glamornate spa.
+vi.mock('@/hooks/useSpas', () => ({
+  useActiveSpa: () => ({ data: { id: 'spa-1', name: 'Test Spa' } }),
 }));
 
 vi.mock('@/lib/logger', () => ({
@@ -58,6 +53,8 @@ vi.mock('@/lib/logger', () => ({
       warn: vi.fn(),
       error: vi.fn(),
     }),
+    info: vi.fn(),
+    warn: vi.fn(),
     error: vi.fn(),
   },
 }));
@@ -68,14 +65,15 @@ vi.mock('@/lib/logger', () => ({
 
 import { useBookingSubmission } from '@/app/customer/book-new/_hooks/useBookingSubmission';
 import type { WizardState } from '@/app/customer/book-new/_hooks/useBookingWizard';
+import type { CartItem } from '@/types';
 
 // ---------------------------------------------------------------------------
-// Fixture
+// Fixtures
 // ---------------------------------------------------------------------------
 
 function makeWizardState(): WizardState {
   return {
-    step: 5,
+    step: 3,
     selectedSpa: { id: 'spa-1', name: 'Test Spa' } as never,
     selectedServices: [{ id: 'svc-1', quantity: 1 }],
     selectedTherapist: null,
@@ -86,20 +84,38 @@ function makeWizardState(): WizardState {
   };
 }
 
+function makeCartItems(): CartItem[] {
+  return [
+    {
+      serviceId: 'svc-1',
+      serviceName: 'VLCC Insta Glow Facial',
+      categoryName: 'Facials',
+      subcategory: '',
+      price: 580,
+      duration: 45,
+      quantity: 1,
+    },
+  ];
+}
+
 beforeEach(() => {
   mutateAsyncSpy.mockReset();
 });
 
 describe('useBookingSubmission', () => {
-  it('calls onSuccess(bookingId) when the create mutation resolves', async () => {
+  it('calls onSuccess(bookingId) when the create mutation resolves, with cart-direct service payload', async () => {
     mutateAsyncSpy.mockResolvedValueOnce({
       bookingId: 'b1',
-      pricing: { services: 1000, addons: 0, tax: 180, discount: 0, platformFee: 50, total: 1230 },
+      pricing: { services: 580, addons: 0, tax: 104, discount: 0, platformFee: 50, total: 734 },
     });
 
     const onSuccess = vi.fn();
     const { result } = renderHook(() =>
-      useBookingSubmission({ wizard: makeWizardState(), onSuccess }),
+      useBookingSubmission({
+        wizard: makeWizardState(),
+        cartItems: makeCartItems(),
+        onSuccess,
+      }),
     );
 
     await act(async () => {
@@ -110,6 +126,18 @@ describe('useBookingSubmission', () => {
       expect(onSuccess).toHaveBeenCalledWith('b1');
     });
     expect(mutateAsyncSpy).toHaveBeenCalledTimes(1);
+    const payload = mutateAsyncSpy.mock.calls[0]?.[0];
+    expect(payload.services).toEqual([
+      {
+        serviceId: 'svc-1',
+        name: 'VLCC Insta Glow Facial',
+        price: 580,
+        duration: 45,
+        quantity: 1,
+      },
+    ]);
+    expect(payload.slot.duration).toBe(45);
+    expect(payload.pricing.services).toBe(580);
     expect(result.current.error).toBeNull();
     expect(result.current.isSubmitting).toBe(false);
   });
@@ -119,7 +147,11 @@ describe('useBookingSubmission', () => {
 
     const onSuccess = vi.fn();
     const { result } = renderHook(() =>
-      useBookingSubmission({ wizard: makeWizardState(), onSuccess }),
+      useBookingSubmission({
+        wizard: makeWizardState(),
+        cartItems: makeCartItems(),
+        onSuccess,
+      }),
     );
 
     await act(async () => {
@@ -131,8 +163,26 @@ describe('useBookingSubmission', () => {
     });
     expect(onSuccess).not.toHaveBeenCalled();
     expect(result.current.isSubmitting).toBe(false);
-    // The hook does not reset the wizard — that is the presenter's job. Pin
-    // the contract by confirming the hook exposes no reset side-effect.
     expect(result.current).not.toHaveProperty('reset');
+  });
+
+  it('surfaces a user-visible error when the cart is empty (kills the silent-bail path)', async () => {
+    const onSuccess = vi.fn();
+    const { result } = renderHook(() =>
+      useBookingSubmission({
+        wizard: makeWizardState(),
+        cartItems: [],
+        onSuccess,
+      }),
+    );
+
+    await act(async () => {
+      await result.current.submit();
+    });
+
+    expect(result.current.error).toBe('Please complete every step before confirming.');
+    expect(mutateAsyncSpy).not.toHaveBeenCalled();
+    expect(onSuccess).not.toHaveBeenCalled();
+    expect(result.current.isSubmitting).toBe(false);
   });
 });

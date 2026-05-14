@@ -44,6 +44,11 @@ android {
         versionCode 2
         versionName "0.1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        // Safe default for ${appCheckProvider} so any future buildType that
+        // forgets to set its own placeholder still merges a valid provider name
+        // into AndroidManifest.xml. Per-buildType overrides below (release,
+        // debug, stagingRelease) still take precedence.
+        manifestPlaceholders = [appCheckProvider: "playintegrity"]
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
              // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61

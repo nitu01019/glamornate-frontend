@@ -16,7 +16,7 @@
  * the canonical test) hides the recovery path.
  */
 import { describe, it, expect } from 'vitest';
-import { detectUnlinkedAccounts } from '@/lib/auth/account-linking';
+import { detectUnlinkedAccounts } from '@/auth/account-linking';
 
 describe('detectUnlinkedAccounts — false-positive boundary cases', () => {
   it('returns false when providerCount === 1 but only ONE identifier is present (email only)', () => {

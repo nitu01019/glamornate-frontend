@@ -1,7 +1,8 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { useCallback, useEffect, useState } from 'react';
 import {
   ChevronRight,
   User,
@@ -84,14 +85,7 @@ function AccountSkeleton() {
 // Menu Row
 // ---------------------------------------------------------------------------
 
-function MenuRow({
-  icon,
-  label,
-  href,
-  onClick,
-  trailing,
-  showDivider = true,
-}: MenuRowProps) {
+function MenuRow({ icon, label, href, onClick, trailing, showDivider = true }: MenuRowProps) {
   const content = (
     <div
       className={`flex items-center gap-3 px-4 py-3.5 active:bg-gray-50 transition-colors ${
@@ -124,11 +118,7 @@ function MenuRow({
 // ---------------------------------------------------------------------------
 
 function SectionCard({ children }: { readonly children: React.ReactNode }) {
-  return (
-    <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
-      {children}
-    </div>
-  );
+  return <div className="bg-white rounded-2xl shadow-sm overflow-hidden">{children}</div>;
 }
 
 // ---------------------------------------------------------------------------
@@ -187,12 +177,8 @@ function AuthenticatedHeader({
           size={64}
         />
         <div className="flex-1 min-w-0">
-          <h1 className="text-lg font-semibold text-gray-900 truncate">
-            {displayName}
-          </h1>
-          {phone && (
-            <p className="text-sm text-gray-500 mt-0.5">{phone}</p>
-          )}
+          <h1 className="text-lg font-semibold text-gray-900 truncate">{displayName}</h1>
+          {phone && <p className="text-sm text-gray-500 mt-0.5">{phone}</p>}
         </div>
         {/* Coins badge */}
         <div className="flex items-center gap-1 bg-brand-gold-50 px-2.5 py-1 rounded-full">
@@ -210,9 +196,7 @@ function AuthenticatedHeader({
           <div className="flex-1">
             <div className="flex items-center gap-1.5 mb-1">
               <Crown className="w-4 h-4 text-brand-gold-400" />
-              <span className="text-sm font-bold text-brand-gold-400">
-                Elite Membership
-              </span>
+              <span className="text-sm font-bold text-brand-gold-400">Elite Membership</span>
             </div>
             <p className="text-xs text-gray-400 leading-relaxed">
               Save more than 3X on every booking
@@ -234,27 +218,21 @@ function AuthenticatedHeader({
           className="flex flex-col items-center gap-2 bg-white border border-gray-100 rounded-2xl py-4 px-2 shadow-sm active:bg-gray-50 transition-colors"
         >
           <BookOpen className="w-5 h-5 text-brand-maroon-500" />
-          <span className="text-xs font-medium text-gray-700 text-center">
-            My Bookings
-          </span>
+          <span className="text-xs font-medium text-gray-700 text-center">My Bookings</span>
         </Link>
         <Link
           href="/customer/addresses"
           className="flex flex-col items-center gap-2 bg-white border border-gray-100 rounded-2xl py-4 px-2 shadow-sm active:bg-gray-50 transition-colors"
         >
           <MapPin className="w-5 h-5 text-brand-maroon-500" />
-          <span className="text-xs font-medium text-gray-700 text-center">
-            Addresses
-          </span>
+          <span className="text-xs font-medium text-gray-700 text-center">Addresses</span>
         </Link>
         <Link
           href="/help"
           className="flex flex-col items-center gap-2 bg-white border border-gray-100 rounded-2xl py-4 px-2 shadow-sm active:bg-gray-50 transition-colors"
         >
           <HelpCircle className="w-5 h-5 text-brand-maroon-500" />
-          <span className="text-xs font-medium text-gray-700 text-center">
-            Help Center
-          </span>
+          <span className="text-xs font-medium text-gray-700 text-center">Help Center</span>
         </Link>
       </div>
     </div>
@@ -267,7 +245,18 @@ function AuthenticatedHeader({
 
 export default function AccountPage() {
   const { isAuthenticated, isLoading, user, firebaseUser, signOut, refreshUser } = useAuth();
+  const router = useRouter();
   const [shareMessage, setShareMessage] = useState<string | null>(null);
+
+  // Authenticated users get the richer /customer/profile experience (with
+  // working Delete Account sheet + Change Password). This page stays as the
+  // guest-facing surface only — guests land here from the tab bar before
+  // signing in. `router.replace` so back-button doesn't return here.
+  useEffect(() => {
+    if (!isLoading && isAuthenticated) {
+      router.replace('/customer/profile');
+    }
+  }, [isLoading, isAuthenticated, router]);
 
   const handleShareApp = useCallback(() => {
     const url = window.location.origin;
@@ -282,12 +271,15 @@ export default function AccountPage() {
         // User cancelled or API unavailable
       });
     } else if (navigator.clipboard) {
-      navigator.clipboard.writeText(url).then(() => {
-        setShareMessage('Link copied!');
-        setTimeout(() => setShareMessage(null), 2000);
-      }).catch(() => {
-        // Clipboard write failed
-      });
+      navigator.clipboard
+        .writeText(url)
+        .then(() => {
+          setShareMessage('Link copied!');
+          setTimeout(() => setShareMessage(null), 2000);
+        })
+        .catch(() => {
+          // Clipboard write failed
+        });
     }
   }, []);
 
@@ -304,7 +296,11 @@ export default function AccountPage() {
       if (!firebaseUser) return;
       try {
         await userService.updateUser(firebaseUser.uid, {
-          profile: { ...user?.profile, displayName: user?.profile?.displayName ?? 'User', photo: url },
+          profile: {
+            ...user?.profile,
+            displayName: user?.profile?.displayName ?? 'User',
+            photo: url,
+          },
           updatedAt: new Date().toISOString(),
         } as Partial<import('@/types').User>);
         await refreshUser();
@@ -312,10 +308,12 @@ export default function AccountPage() {
         // Photo update error -- upload itself already succeeded so the URL is valid
       }
     },
-    [firebaseUser, user, refreshUser]
+    [firebaseUser, user, refreshUser],
   );
 
-  if (isLoading) {
+  if (isLoading || isAuthenticated) {
+    // Authenticated users see a brief skeleton before the redirect takes
+    // effect; guests never hit this branch.
     return <AccountSkeleton />;
   }
 
@@ -367,9 +365,7 @@ export default function AccountPage() {
             }
             showDivider={false}
           />
-          <p className="px-4 pb-3 -mt-1 text-xs text-gray-400">
-            coins &amp; free services
-          </p>
+          <p className="px-4 pb-3 -mt-1 text-xs text-gray-400">coins &amp; free services</p>
         </SectionCard>
 
         {/* Earn With Us */}
@@ -388,9 +384,7 @@ export default function AccountPage() {
         {/* Wanna Read Something? */}
         <SectionCard>
           <div className="px-4 pt-3.5 pb-1">
-            <h2 className="text-sm font-bold text-gray-900">
-              Wanna Read Something?
-            </h2>
+            <h2 className="text-sm font-bold text-gray-900">Wanna Read Something?</h2>
           </div>
           <MenuRow
             icon={<Globe className="w-5 h-5" />}
@@ -403,25 +397,15 @@ export default function AccountPage() {
         {/* Other Information */}
         <SectionCard>
           <div className="px-4 pt-3.5 pb-1">
-            <h2 className="text-sm font-bold text-gray-900">
-              Other Information
-            </h2>
+            <h2 className="text-sm font-bold text-gray-900">Other Information</h2>
           </div>
           <MenuRow
             icon={<Share2 className="w-5 h-5" />}
-            label={shareMessage ?? "Share the App"}
+            label={shareMessage ?? 'Share the App'}
             onClick={handleShareApp}
           />
-          <MenuRow
-            icon={<Info className="w-5 h-5" />}
-            label="About Us"
-            href="/about"
-          />
-          <MenuRow
-            icon={<Shield className="w-5 h-5" />}
-            label="Privacy Policy"
-            href="/privacy"
-          />
+          <MenuRow icon={<Info className="w-5 h-5" />} label="About Us" href="/about" />
+          <MenuRow icon={<Shield className="w-5 h-5" />} label="Privacy Policy" href="/privacy" />
           <MenuRow
             icon={<FileText className="w-5 h-5" />}
             label="Terms & Conditions"
@@ -462,9 +446,7 @@ export default function AccountPage() {
 
         {/* App version footer */}
         <div className="flex flex-col items-center py-6">
-          <span className="text-sm font-semibold text-gray-400">
-            Glamornate
-          </span>
+          <span className="text-sm font-semibold text-gray-400">Glamornate</span>
           <span className="text-xs text-gray-300 mt-0.5">v1.0.0</span>
         </div>
       </div>

@@ -177,3 +177,95 @@ describe('reverseGeocodeCoords', () => {
     expect(result.status).toBe('error');
   });
 });
+
+// ---------------------------------------------------------------------------
+// In-flight dedupe (red-team T-A5 test gap)
+// ---------------------------------------------------------------------------
+// Two consumers (e.g. HomeLocationSheet GPS row + LocationMapPin drag-end +
+// usePreWarmLocation) requesting the same coord cell within the same animation
+// frame must share ONE Firebase callable round-trip — otherwise we'd burn
+// quota and pay double latency.
+//
+// `options.callable` injection bypasses the dedupe map intentionally (tests
+// shouldn't leak state across the module-scoped Map), so we use the DEFAULT
+// callable via the dedupe path by NOT passing `options.callable` and instead
+// mocking the underlying `firebase/functions` modules.
+
+import {
+  reverseGeocodeCoords as reverseGeocodeCoordsDefault,
+  __resetReverseGeocodeInFlightForTests,
+} from '../reverse-geocode-client';
+import * as firebaseFunctions from 'firebase/functions';
+import * as firebaseApp from '@/lib/firebase';
+
+describe('reverseGeocodeCoords — in-flight dedupe', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetReverseGeocodeInFlightForTests();
+  });
+
+  it('shares one callable invocation across concurrent same-cell callers', async () => {
+    // Build a single underlying callable invocation we can count.
+    const underlying = vi.fn(async () => ({
+      data: {
+        formattedAddress: 'MG Road, Bengaluru',
+        components: { city: 'Bengaluru' },
+        cachedAt: Date.now(),
+        source: 'google' as const,
+      },
+    }));
+    vi.mocked(firebaseApp.getFirebaseApp).mockReturnValue({} as never);
+    vi.mocked(firebaseFunctions.getFunctions).mockReturnValue({} as never);
+    vi.mocked(firebaseFunctions.httpsCallable).mockReturnValue(underlying as never);
+
+    // Two concurrent calls for the same cell (4dp grid identical).
+    const [a, b] = await Promise.all([
+      reverseGeocodeCoordsDefault({ lat: 12.97161, lng: 77.59461 }),
+      reverseGeocodeCoordsDefault({ lat: 12.97162, lng: 77.59462 }),
+    ]);
+
+    expect(underlying).toHaveBeenCalledTimes(1);
+    expect(a.status).toBe('ok');
+    expect(b.status).toBe('ok');
+  });
+
+  it('different cells produce independent callable invocations', async () => {
+    const underlying = vi.fn(async () => ({
+      data: {
+        formattedAddress: 'somewhere',
+        components: {},
+        cachedAt: Date.now(),
+        source: 'google' as const,
+      },
+    }));
+    vi.mocked(firebaseApp.getFirebaseApp).mockReturnValue({} as never);
+    vi.mocked(firebaseFunctions.getFunctions).mockReturnValue({} as never);
+    vi.mocked(firebaseFunctions.httpsCallable).mockReturnValue(underlying as never);
+
+    await Promise.all([
+      reverseGeocodeCoordsDefault({ lat: 12.9716, lng: 77.5946 }),
+      reverseGeocodeCoordsDefault({ lat: 28.6139, lng: 77.209 }),
+    ]);
+    expect(underlying).toHaveBeenCalledTimes(2);
+  });
+
+  it('clears the in-flight entry on settle so subsequent calls are not stuck', async () => {
+    const underlying = vi.fn(async () => ({
+      data: {
+        formattedAddress: 'MG Road, Bengaluru',
+        components: {},
+        cachedAt: Date.now(),
+        source: 'google' as const,
+      },
+    }));
+    vi.mocked(firebaseApp.getFirebaseApp).mockReturnValue({} as never);
+    vi.mocked(firebaseFunctions.getFunctions).mockReturnValue({} as never);
+    vi.mocked(firebaseFunctions.httpsCallable).mockReturnValue(underlying as never);
+
+    await reverseGeocodeCoordsDefault({ lat: 12.9716, lng: 77.5946 });
+    await reverseGeocodeCoordsDefault({ lat: 12.9716, lng: 77.5946 });
+    // First call goes through, second is a fresh in-flight (after the first
+    // settled and was cleared from the dedupe map).
+    expect(underlying).toHaveBeenCalledTimes(2);
+  });
+});

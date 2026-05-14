@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { MapPin, Navigation, Phone, AlertCircle } from 'lucide-react';
 import { openDirections } from '@/lib/maps-deeplink';
-import type { BookingCustomerLocation } from '@/lib/contracts';
+import type { BookingCustomerLocation } from '@/shared/contracts';
 import MapsKeyMissingFallback from '@/components/maps/MapsKeyMissingFallback';
 
 export interface SpaBookingLocationCardProps {
@@ -74,22 +74,15 @@ export function SpaBookingLocationCard({
       void openDirections({ lat, lng, address: addressText });
     };
     return (
-      <Card
-        className="border-0 shadow-sm rounded-2xl"
-        data-testid="spa-booking-location-card"
-      >
+      <Card className="border-0 shadow-sm rounded-2xl" data-testid="spa-booking-location-card">
         <CardContent className="p-5 space-y-4">
           <div className="flex items-start gap-3">
             <div className="w-10 h-10 bg-brand-maroon-100 rounded-xl flex items-center justify-center shrink-0">
               <MapPin className="w-5 h-5 text-brand-maroon-600" />
             </div>
             <div className="min-w-0 flex-1">
-              <p className="text-xs text-gray-500 uppercase tracking-wide">
-                Service Address
-              </p>
-              <p className="font-medium text-gray-900 leading-snug">
-                {addressText}
-              </p>
+              <p className="text-xs text-gray-500 uppercase tracking-wide">Service Address</p>
+              <p className="font-medium text-gray-900 leading-snug">{addressText}</p>
             </div>
           </div>
 
@@ -133,9 +126,7 @@ export function SpaBookingLocationCard({
 
           {location.additionalDetails && (
             <div className="border-t border-gray-100 pt-4">
-              <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">
-                Doorstep Notes
-              </p>
+              <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">Doorstep Notes</p>
               <p className="text-sm text-gray-700 whitespace-pre-line">
                 {location.additionalDetails}
               </p>
@@ -149,18 +140,13 @@ export function SpaBookingLocationCard({
   // Home but no captured location (legacy bookings)
   if (isHome) {
     return (
-      <Card
-        className="border-0 shadow-sm rounded-2xl"
-        data-testid="spa-booking-location-card"
-      >
+      <Card className="border-0 shadow-sm rounded-2xl" data-testid="spa-booking-location-card">
         <CardContent className="p-5 flex items-start gap-3">
           <div className="w-10 h-10 bg-amber-100 rounded-xl flex items-center justify-center shrink-0">
             <AlertCircle className="w-5 h-5 text-amber-600" />
           </div>
           <div className="min-w-0 flex-1">
-            <p className="text-xs text-gray-500 uppercase tracking-wide">
-              Service Address
-            </p>
+            <p className="text-xs text-gray-500 uppercase tracking-wide">Service Address</p>
             <span className="inline-flex items-center mt-1 px-3 py-1 rounded-full bg-amber-50 text-amber-700 text-xs font-medium">
               No location captured
             </span>
@@ -178,10 +164,7 @@ export function SpaBookingLocationCard({
   // In-spa booking (default for legacy / explicit 'spa')
   const spaGeo = spa.location?.geo;
   return (
-    <Card
-      className="border-0 shadow-sm rounded-2xl"
-      data-testid="spa-booking-location-card"
-    >
+    <Card className="border-0 shadow-sm rounded-2xl" data-testid="spa-booking-location-card">
       <CardContent className="p-5 space-y-4">
         <div className="flex items-start gap-3">
           <div className="w-10 h-10 bg-brand-maroon-100 rounded-xl flex items-center justify-center shrink-0">
@@ -189,9 +172,7 @@ export function SpaBookingLocationCard({
           </div>
           <div className="min-w-0 flex-1">
             <p className="text-xs text-gray-500 uppercase tracking-wide">Location</p>
-            <p className="font-medium text-gray-900">
-              Booking will be at {spa.name}
-            </p>
+            <p className="font-medium text-gray-900">Booking will be at {spa.name}</p>
           </div>
         </div>
         {spaGeo && (
