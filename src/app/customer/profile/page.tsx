@@ -429,10 +429,7 @@ function ProfilePageContent() {
 
       {/* Delete Account Sheet (Phase 3 — Agent 3B) */}
       {ACCOUNT_FLAGS.deleteEnabled && (
-        <DeleteAccountSheet
-          open={deleteAccountOpen}
-          onClose={() => setDeleteAccountOpen(false)}
-        />
+        <DeleteAccountSheet open={deleteAccountOpen} onClose={() => setDeleteAccountOpen(false)} />
       )}
 
       {/* Bottom spacing */}

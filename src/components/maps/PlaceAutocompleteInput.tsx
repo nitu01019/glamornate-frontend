@@ -22,9 +22,11 @@ interface PlaceAddressComponent {
   types: string[];
 }
 
-function extractAddressParts(
-  components: PlaceAddressComponent[] | undefined,
-): { city?: string; state?: string; postalCode?: string } {
+function extractAddressParts(components: PlaceAddressComponent[] | undefined): {
+  city?: string;
+  state?: string;
+  postalCode?: string;
+} {
   if (!components || components.length === 0) return {};
   const findByType = (...types: string[]): string | undefined => {
     for (const type of types) {
@@ -34,7 +36,12 @@ function extractAddressParts(
     return undefined;
   };
   return {
-    city: findByType('locality', 'administrative_area_level_2', 'sublocality_level_1', 'sublocality'),
+    city: findByType(
+      'locality',
+      'administrative_area_level_2',
+      'sublocality_level_1',
+      'sublocality',
+    ),
     state: findByType('administrative_area_level_1'),
     postalCode: findByType('postal_code'),
   };
